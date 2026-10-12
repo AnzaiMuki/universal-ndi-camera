@@ -9,8 +9,11 @@ final class UndiClient {
     private var sequence: UInt32 = 0
     private(set) var connected = false
     private var rxBuffer = Data()   // accumulateur de réception (toujours ré-ancré à l'index 0)
+    private var didConnect = false  // a atteint .ready au moins une fois sur cette connexion
+    private var closing = false     // fermeture VOLONTAIRE (stop) : ne pas signaler de perte
 
     var onStatus: ((String) -> Void)?
+    var onDisconnected: (() -> Void)?   // perte INVOLONTAIRE du lien (déclenche la reconnexion)
     // Canal retour (appelés sur la file du client ; l'appelant repasse sur le thread principal).
     var onTally: ((TallyState) -> Void)?
     var onCommand: ((CameraCommand) -> Void)?
@@ -30,6 +33,9 @@ final class UndiClient {
             tcp.noDelay = true               // latence : désactive Nagle
             tcp.connectionTimeout = 5        // secondes
         }
+        conn?.cancel()                 // abandonne une éventuelle connexion précédente
+        closing = false
+        didConnect = false
         let c = NWConnection(to: endpoint, using: params)
         conn = c
         var done = false
@@ -38,6 +44,7 @@ final class UndiClient {
             switch state {
             case .ready:
                 self.connected = true
+                self.didConnect = true
                 self.onStatus?("Connecté à \(label)")
                 self.rxBuffer.removeAll(keepingCapacity: true)
                 self.startReceive()
@@ -46,8 +53,10 @@ final class UndiClient {
                 self.connected = false
                 self.onStatus?("Échec : \(error.localizedDescription)")
                 if !done { done = true; completion(false) }
+                else { self.signalLost() }   // perte après coup → reconnexion
             case .cancelled:
                 self.connected = false
+                self.signalLost()
             case .waiting(let error):
                 self.onStatus?("En attente réseau : \(error.localizedDescription)")
             default:
@@ -149,7 +158,17 @@ final class UndiClient {
         }
     }
 
+    /// Signale UNE SEULE FOIS une perte involontaire du lien (ni pendant la connexion initiale, ni
+    /// lors d'une fermeture volontaire). Le `didConnect = false` empêche les déclenchements multiples.
+    private func signalLost() {
+        guard didConnect, !closing else { return }
+        didConnect = false
+        onDisconnected?()
+    }
+
     func close() {
+        closing = true
+        didConnect = false
         conn?.cancel()
         conn = nil
         connected = false

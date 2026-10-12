@@ -51,6 +51,10 @@ final class H264Encoder {
 
     func requestKeyframe() { forceKeyframeNext = true }
 
+    /// Après une reconnexion, force la ré-émission du SPS/PPS à la prochaine image clé (sans quoi le
+    /// pont, qui a perdu son contexte, ne saurait pas redécoder le flux).
+    func resendConfig() { sentConfig = false }
+
     func encode(_ pixelBuffer: CVPixelBuffer, ptsUs: Int64) {
         guard let session else { return }
         let pts = CMTime(value: ptsUs, timescale: 1_000_000)

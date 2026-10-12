@@ -47,6 +47,9 @@ final class StreamManager: ObservableObject {
     private var statsTimer: Timer?
     private var cueToken = 0
     private var replyToken = 0
+    private var reconnecting = false
+    private var reconnectDeadline: Date?
+    private let maxReconnect: TimeInterval = 90   // reprise bornée (comme Android) puis abandon
 
     init() {
         client.onStatus = { [weak self] s in Task { @MainActor in self?.status = s } }
@@ -54,6 +57,7 @@ final class StreamManager: ObservableObject {
         client.onCue = { [weak self] c in Task { @MainActor in self?.showCue(c) } }
         client.onSeen = { [weak self] in Task { @MainActor in self?.markReplySeen() } }
         client.onCommand = { [weak self] cmd in Task { @MainActor in self?.apply(cmd) } }
+        client.onDisconnected = { [weak self] in Task { @MainActor in self?.handleDisconnect() } }
     }
 
     var isStreaming: Bool { if case .streaming = state { return true }; return false }
@@ -242,6 +246,48 @@ final class StreamManager: ObservableObject {
         else if micEnabled && isStreaming { startAudio() }
     }
 
+    // MARK: - Reconnexion bornée (reprise d'une micro-coupure, puis abandon)
+
+    private func handleDisconnect() {
+        guard isStreaming else { return }   // perte involontaire pendant le direct
+        reconnecting = true
+        reconnectDeadline = Date().addingTimeInterval(maxReconnect)
+        status = "Reconnexion…"
+        attemptReconnect(backoff: 0.5)
+    }
+
+    private func attemptReconnect(backoff: Double) {
+        guard reconnecting, isStreaming, let connect = lastConnect else { return }
+        if Date() > (reconnectDeadline ?? .distantPast) {
+            reconnecting = false
+            fail("Direct abandonné (réseau indisponible \(Int(maxReconnect)) s)")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
+            guard let self, self.reconnecting else { return }
+            connect { ok in
+                Task { @MainActor in
+                    guard self.reconnecting else { return }
+                    if ok { self.onReconnected() }
+                    else { self.attemptReconnect(backoff: min(backoff * 2, 5)) }
+                }
+            }
+        }
+    }
+
+    /// Lien rétabli : on refait le handshake et on force SPS/PPS + image clé (le pont a tout perdu).
+    private func onReconnected() {
+        reconnecting = false
+        status = "En direct"
+        client.sendHello(name: deviceName)
+        client.sendStreamConfig(StreamConfig(codec: .h264, width: streamWidth, height: streamHeight, fps: fps, bitrateBps: currentBitrate))
+        encoder?.resendConfig()
+        encoder?.requestKeyframe()
+        if micEnabled && !audioMuted { startAudio() }
+        reportStats()
+        echo()
+    }
+
     /// Reconnecte le lien pour appliquer une nouvelle résolution en direct (comme Android).
     private func restart() {
         guard let connect = lastConnect else { echo(); return }
@@ -275,6 +321,7 @@ final class StreamManager: ObservableObject {
     // MARK: - Arrêt / erreur
 
     func stop() {
+        reconnecting = false
         statsTimer?.invalidate(); statsTimer = nil
         capture.onSample = nil
         audio.stop()
@@ -294,6 +341,7 @@ final class StreamManager: ObservableObject {
     }
 
     private func fail(_ message: String) {
+        reconnecting = false
         statsTimer?.invalidate(); statsTimer = nil
         capture.onSample = nil
         audio.stop()
