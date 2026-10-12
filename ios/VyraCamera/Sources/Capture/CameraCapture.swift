@@ -119,7 +119,7 @@ final class CameraCapture: NSObject {
                 if d.isFocusModeSupported(.continuousAutoFocus) { d.focusMode = .continuousAutoFocus }
             } else if auto == false || distance != nil {
                 if let distance, d.isLockingFocusWithCustomLensPositionSupported {
-                    d.setFocusModeLockedWithLensPosition(distance.clamped(0, 1), completionHandler: nil)
+                    d.setFocusModeLocked(lensPosition: distance.clamped(0, 1), completionHandler: nil)
                 } else if d.isFocusModeSupported(.locked) {
                     d.focusMode = .locked
                 }
