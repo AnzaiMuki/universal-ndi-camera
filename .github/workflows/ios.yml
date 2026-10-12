@@ -1,0 +1,52 @@
+name: Build iOS (VYRA Camera)
+
+# Compile l'app iPhone sur un Mac dans le cloud (gratuit pour un dépôt public). Produit un .ipa
+# NON SIGNÉ : à installer sur l'iPhone avec Sideloadly / AltStore + un identifiant Apple GRATUIT
+# (ces outils re-signent eux-mêmes). Aucun compte Apple Developer payant nécessaire pour tester.
+
+on:
+  push:
+    paths: ["ios/VyraCamera/**"]
+  pull_request:
+    paths: ["ios/VyraCamera/**"]
+  workflow_dispatch:   # bouton « Run workflow » dans l'onglet Actions
+
+jobs:
+  build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios/VyraCamera
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+
+      - name: Compiler (archive non signée)
+        run: |
+          xcodebuild \
+            -project VyraCamera.xcodeproj \
+            -scheme VyraCamera \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/VyraCamera.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Empaqueter en .ipa non signé
+        run: |
+          APP="$RUNNER_TEMP/VyraCamera.xcarchive/Products/Applications/VyraCamera.app"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -r -y VyraCamera-unsigned.ipa Payload >/dev/null)
+
+      - name: Publier l'artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-unsigned-ipa
+          path: ${{ runner.temp }}/VyraCamera-unsigned.ipa
+          if-no-files-found: error
