@@ -4,15 +4,40 @@ App iOS native (Swift / SwiftUI) qui transforme un iPhone en caméra pour **VYRA
 parlant **exactement le même protocole UNDI** que l'app Android (en-tête 24 octets, H.264 Annex-B,
 Bonjour `_undicam._tcp`, port TCP **6789**). Aucune caméra à acheter, aucun abonnement.
 
-## Ce que fait cette v0.2 (périmètre volontairement réduit)
+## Ce que fait cette v0.4 (parité avec l'app Android, sauf SRT)
 
-- Aperçu caméra plein écran (caméra arrière, **720p30 ≈ 4 Mbit/s**).
+- Aperçu caméra plein écran (caméra arrière, **720p / 1080p / 2160p**, débit réglable).
 - Connexion à la régie : **régie détectée sur le réseau** (Bonjour) **ou IP saisie à la main**.
-- Envoi vidéo **H.264 → VYRA Studio** (HELLO → STREAM_CONFIG → SPS/PPS → trames vidéo).
-- **Audio micro** (optionnel, activable) : PCM 16 bits mono 48 kHz, horodaté sur la même horloge
-  que la vidéo (synchro labiale). Une panne micro ne coupe jamais la vidéo.
+- Vidéo **H.264 → VYRA Studio** + **audio micro** PCM 16 bits mono 48 kHz (synchro labiale).
+- **Canal retour** : tally (à l'antenne / préparation), consignes **CUE** (bannière HUD),
+  réponses **REPLY** du vidéaste (+ accusé « vu »).
+- **Pilotage à distance** (trames CONTROL) : zoom, torche, exposition (auto / ISO+durée + biais EV),
+  mise au point, balance des blancs, pause vidéo, coupure/volume micro, débit adaptatif ou fixe,
+  résolution — tout borné aux capacités du capteur, et **ré-émis au pont** (il affiche la vérité).
+- **Télémétrie** batterie / charge / niveau thermique toutes les 5 s.
+- **Reconnexion bornée 90 s** (reprise d'une micro-coupure, puis abandon) — comme l'Android.
 
-Pas encore : pilotage à distance (zoom/expo), caméra frontale, SRT. À ajouter ensuite.
+Hors parité pour l'instant : **SRT** (l'Android s'appuie sur la bibliothèque native *libsrt* via
+`srtdroid` ; la porter sur iOS demande un xcframework `libsrt`, à faire dans un second temps) ;
+caméra frontale. Le chemin principal en réseau local (**NDI via TCP**) est complet.
+
+## Tester GRATUITEMENT (sans appareil, sans Mac)
+
+> ⚠️ **Il n'existe aucun émulateur iPhone sous Windows.** Le simulateur iOS d'Apple ne tourne que
+> sur macOS (il fait partie de Xcode) **et n'a pas de caméra**. On ne peut donc pas « régler un
+> émulateur iPhone sur son PC Windows » : ça n'existe pas. Mais le test automatique se fait très bien
+> **dans le cloud macOS gratuit** (GitHub Actions) — c'est ce que fait le workflow :
+
+1. **Tests unitaires** (`Tests/UndiProtocolTests.swift`) : vérifient **octet par octet** que l'iPhone
+   produit exactement les formats attendus par VYRA Studio (en-tête, STREAM_CONFIG, audio, CONTROL,
+   tally, cue, reply, stats). C'est la vérification « de A à Z » du protocole, **sans appareil**.
+2. **Smoke test sur simulateur** : l'app est **installée et lancée** dans un simulateur iPhone (sur
+   le Mac cloud) → confirme qu'elle démarre sans planter et que l'UI s'affiche.
+
+Ce que le simulateur **ne peut pas** tester : la captation caméra et le direct réel (pas de caméra
+dans le simulateur). Ça se teste sur **iPhone physique** (sideload, voir ci-dessous) face à VYRA Studio.
+Pour lancer le simulateur en local, il faut un **Mac** (ou un Mac cloud type MacStadium / GitHub
+Actions) ; depuis Windows, on s'appuie sur le CI.
 
 ## Compiler SANS posséder de Mac (gratuit)
 

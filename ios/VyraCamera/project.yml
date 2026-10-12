@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: "0.2.0"
+    MARKETING_VERSION: "0.4.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     TARGETED_DEVICE_FAMILY: "1,2"
@@ -37,3 +37,26 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  # Cible de tests : vérifie les formats filaires UNDI (A→Z, sans appareil ni caméra).
+  VyraCameraTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: VyraCamera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  VyraCamera:
+    build:
+      targets:
+        VyraCamera: all
+        VyraCameraTests: [test]
+    test:
+      targets:
+        - VyraCameraTests
