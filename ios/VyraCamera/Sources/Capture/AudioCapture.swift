@@ -17,6 +17,14 @@ final class AudioCapture {
     var onPCM: ((Data, Int, Int, Int64) -> Void)?
     var onFailure: ((String) -> Void)?
 
+    // Gain linéaire appliqué au PCM avant envoi (1 = natif). Piloté à distance via setGainDb [-24,+24] dB.
+    private var gainFactor: Float = 1
+
+    func setGainDb(_ db: Int) {
+        let clamped = min(max(db, -24), 24)
+        gainFactor = clamped == 0 ? 1 : powf(10, Float(clamped) / 20)
+    }
+
     static func requestAccess(_ done: @escaping (Bool) -> Void) {
         let s = AVAudioSession.sharedInstance()
         switch s.recordPermission {
@@ -88,7 +96,19 @@ final class AudioCapture {
         if err != nil || out.frameLength == 0 { return }
 
         guard let ch = out.int16ChannelData else { return }
-        let byteCount = Int(out.frameLength) * MemoryLayout<Int16>.size
+        let count = Int(out.frameLength)
+
+        // Gain : multiplie chaque échantillon int16 par le facteur, avec écrêtage dur (comme Android).
+        if gainFactor != 1 {
+            let g = gainFactor
+            let p = ch[0]
+            for i in 0..<count {
+                let v = Int(Float(p[i]) * g)
+                p[i] = Int16(min(max(v, -32768), 32767))
+            }
+        }
+
+        let byteCount = count * MemoryLayout<Int16>.size
         let pcm = Data(bytes: ch[0], count: byteCount)
 
         let ptsUs = Int64(AVAudioTime.seconds(forHostTime: when.hostTime) * 1_000_000)

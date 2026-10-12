@@ -1,15 +1,21 @@
 import Foundation
 import Network
 
-// Client réseau TCP vers VYRA Studio (Network.framework). Envoie HELLO + STREAM_CONFIG puis les
-// trames VIDEO. Un seul sens (émission) en v1 ; la voie retour (TALLY/CONTROL) viendra ensuite.
+// Client réseau TCP vers VYRA Studio (Network.framework). Émission (HELLO, STREAM_CONFIG, VIDEO,
+// AUDIO, STATS, REPLY, écho CONTROL) ET réception du canal retour (TALLY, CONTROL, CUE, SEEN).
 final class UndiClient {
     private var conn: NWConnection?
     private let queue = DispatchQueue(label: "com.ndicam.undi.client")
     private var sequence: UInt32 = 0
     private(set) var connected = false
+    private var rxBuffer = Data()   // accumulateur de réception (toujours ré-ancré à l'index 0)
 
     var onStatus: ((String) -> Void)?
+    // Canal retour (appelés sur la file du client ; l'appelant repasse sur le thread principal).
+    var onTally: ((TallyState) -> Void)?
+    var onCommand: ((CameraCommand) -> Void)?
+    var onCue: ((Cue) -> Void)?
+    var onSeen: (() -> Void)?
 
     /// Connexion par IP + port (saisie manuelle).
     func connect(host: String, port: UInt16, completion: @escaping (Bool) -> Void) {
@@ -33,6 +39,8 @@ final class UndiClient {
             case .ready:
                 self.connected = true
                 self.onStatus?("Connecté à \(label)")
+                self.rxBuffer.removeAll(keepingCapacity: true)
+                self.startReceive()
                 if !done { done = true; completion(true) }
             case .failed(let error):
                 self.connected = false
@@ -85,6 +93,60 @@ final class UndiClient {
         withUnsafeBytes(of: &ch) { payload.append(contentsOf: $0) }
         payload.append(pcm)
         writeFrame(type: .audio, flags: 0, ptsUs: ptsUs, payload: payload)
+    }
+
+    /// Réponse rapide du vidéaste → pont (trame REPLY).
+    func sendReply(_ reply: Reply) { writeFrame(type: .reply, flags: 0, ptsUs: 0, payload: reply.encodePayload()) }
+
+    /// Télémétrie batterie/thermique → pont (trame STATS).
+    func sendStats(_ stats: DeviceStats) { writeFrame(type: .stats, flags: 0, ptsUs: 0, payload: stats.encodePayload()) }
+
+    /// Écho de l'état RÉELLEMENT appliqué → pont (trame CONTROL) : il affiche la vérité, pas sa demande.
+    func sendControl(_ cmd: CameraCommand) { writeFrame(type: .control, flags: 0, ptsUs: 0, payload: cmd.encodePayload()) }
+
+    // MARK: - Réception du canal retour
+
+    private func startReceive() {
+        conn?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                self.rxBuffer.append(data)
+                self.parseFrames()
+            }
+            if isComplete || error != nil { return }
+            self.startReceive()
+        }
+    }
+
+    private func parseFrames() {
+        func u32(_ off: Int) -> UInt32 {
+            UInt32(rxBuffer[off]) | (UInt32(rxBuffer[off + 1]) << 8) |
+            (UInt32(rxBuffer[off + 2]) << 16) | (UInt32(rxBuffer[off + 3]) << 24)
+        }
+        while rxBuffer.count >= 24 {
+            if u32(0) != UndiProtocol.magic {
+                rxBuffer = rxBuffer.subdata(in: 1..<rxBuffer.count)   // resynchronisation sur le MAGIC
+                continue
+            }
+            let type = rxBuffer[5]
+            let length = Int(Int32(bitPattern: u32(8)))
+            if length < 0 || length > UndiProtocol.maxPayloadSize { rxBuffer.removeAll(); return }
+            let total = 24 + length
+            if rxBuffer.count < total { return }   // trame incomplète : on attend la suite
+            let payload = length > 0 ? rxBuffer.subdata(in: 24..<total) : Data()
+            dispatch(type: type, payload: payload)
+            rxBuffer = rxBuffer.subdata(in: total..<rxBuffer.count)
+        }
+    }
+
+    private func dispatch(type: UInt8, payload: Data) {
+        switch type {
+        case FrameType.tally.rawValue: onTally?(TallyState.decode(payload))
+        case FrameType.control.rawValue: onCommand?(CameraCommand.decode(payload))
+        case FrameType.cue.rawValue: onCue?(Cue.decode(payload))
+        case FrameType.seen.rawValue: onSeen?()
+        default: break   // type non exploité dans ce sens
+        }
     }
 
     func close() {

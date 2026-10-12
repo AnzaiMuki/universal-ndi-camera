@@ -13,6 +13,7 @@ struct ContentView: View {
     private let ink = Color(red: 0.918, green: 0.941, blue: 0.925)   // #EAF0EC
     private let sage = Color(red: 0.616, green: 0.690, blue: 0.651)  // #9DB0A6
     private let green = Color(red: 0.133, green: 0.773, blue: 0.369) // #22C55E
+    private let onair = Color(red: 0.90, green: 0.26, blue: 0.21)    // tally antenne (rouge)
 
     var body: some View {
         ZStack {
@@ -27,15 +28,58 @@ struct ContentView: View {
                 startPoint: .center, endPoint: .bottom
             ).ignoresSafeArea()
 
-            VStack(spacing: 0) {
+            VStack(spacing: 12) {
                 header
+                if manager.isStreaming { tallyBar }
                 Spacer()
+                if let c = manager.cue { cueBanner(c) }
+                if let r = manager.replyStatus { replyStatusView(r) }
                 controls
             }
             .padding(20)
         }
         .onAppear { manager.startPreview(); discovery.start() }
         .onDisappear { discovery.stop(); manager.teardown() }
+    }
+
+    // MARK: - Tally / CUE / Réponses
+
+    @ViewBuilder private var tallyBar: some View {
+        if manager.tally.program {
+            tallyPill("À L'ANTENNE", onair)
+        } else if manager.tally.preview {
+            tallyPill("PRÉPARATION", green)
+        }
+    }
+
+    private func tallyPill(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.system(.subheadline, design: .monospaced)).fontWeight(.bold)
+            .tracking(2).foregroundColor(.white)
+            .frame(maxWidth: .infinity).padding(.vertical, 10)
+            .background(color, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func cueBanner(_ c: Cue) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: c.urgent ? "exclamationmark.triangle.fill" : "bubble.left.fill")
+            Text(c.text).font(.headline).fontWeight(.semibold)
+            Spacer(minLength: 0)
+        }
+        .foregroundColor(.white).padding(14)
+        .frame(maxWidth: .infinity)
+        .background(c.urgent ? onair : Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func replyStatusView(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: manager.replySeen ? "checkmark.circle.fill" : "paperplane.fill").foregroundColor(green)
+            Text(manager.replySeen ? "Vu par la régie" : "Envoyé : \(text)")
+                .font(.caption).foregroundColor(ink)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
     }
 
     // MARK: - En-tête
@@ -62,12 +106,21 @@ struct ContentView: View {
 
     @ViewBuilder private var controls: some View {
         if manager.isStreaming {
-            Button(action: manager.stop) {
-                Label("Arrêter le direct", systemImage: "stop.fill")
-                    .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 16)
+            VStack(spacing: 12) {
+                statsRow
+                // Réponses rapides du vidéaste vers la régie (canal retour).
+                HStack(spacing: 8) {
+                    replyButton("Compris", alert: false)
+                    replyButton("Prêt", alert: false)
+                    replyButton("Besoin régie", alert: true)
+                }
+                Button(action: manager.stop) {
+                    Label("Arrêter le direct", systemImage: "stop.fill")
+                        .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 16)
+                }
+                .foregroundColor(.white)
+                .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
             }
-            .foregroundColor(.white)
-            .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
         } else {
             VStack(alignment: .leading, spacing: 14) {
                 if !discovery.services.isEmpty {
@@ -110,6 +163,35 @@ struct ContentView: View {
             }
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        }
+    }
+
+    private func replyButton(_ text: String, alert: Bool) -> some View {
+        Button { manager.sendReply(text, alert: alert) } label: {
+            Text(text).font(.footnote).fontWeight(.semibold).foregroundColor(alert ? .white : ink)
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(alert ? onair.opacity(0.85) : Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var statsRow: some View {
+        HStack(spacing: 14) {
+            Label(manager.battery >= 0 ? "\(manager.battery)%" : "—",
+                  systemImage: manager.charging ? "battery.100.bolt" : "battery.50")
+            Label(thermalText, systemImage: "thermometer.medium")
+            Spacer()
+        }
+        .font(.system(.caption, design: .monospaced))
+        .foregroundColor(manager.thermal == .hot || manager.thermal == .critical ? onair : sage)
+    }
+
+    private var thermalText: String {
+        switch manager.thermal {
+        case .nominal: return "OK"
+        case .warm: return "Tiède"
+        case .hot: return "Chaud"
+        case .critical: return "Critique"
+        case .unknown: return "—"
         }
     }
 
