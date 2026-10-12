@@ -4,13 +4,15 @@ App iOS native (Swift / SwiftUI) qui transforme un iPhone en caméra pour **VYRA
 parlant **exactement le même protocole UNDI** que l'app Android (en-tête 24 octets, H.264 Annex-B,
 Bonjour `_undicam._tcp`, port TCP **6789**). Aucune caméra à acheter, aucun abonnement.
 
-## Ce que fait cette v0.1 (périmètre volontairement réduit)
+## Ce que fait cette v0.2 (périmètre volontairement réduit)
 
 - Aperçu caméra plein écran (caméra arrière, **720p30 ≈ 4 Mbit/s**).
 - Connexion à la régie : **régie détectée sur le réseau** (Bonjour) **ou IP saisie à la main**.
 - Envoi vidéo **H.264 → VYRA Studio** (HELLO → STREAM_CONFIG → SPS/PPS → trames vidéo).
+- **Audio micro** (optionnel, activable) : PCM 16 bits mono 48 kHz, horodaté sur la même horloge
+  que la vidéo (synchro labiale). Une panne micro ne coupe jamais la vidéo.
 
-Pas encore : audio, pilotage à distance (zoom/expo), caméra frontale, SRT. À ajouter ensuite.
+Pas encore : pilotage à distance (zoom/expo), caméra frontale, SRT. À ajouter ensuite.
 
 ## Compiler SANS posséder de Mac (gratuit)
 

@@ -74,6 +74,19 @@ final class UndiClient {
         writeFrame(type: .video, flags: flags, ptsUs: ptsUs, payload: annexB)
     }
 
+    /// Envoie un bloc audio PCM. Charge utile : sampleRate(u32 LE) | channels(u16 LE) | PCM int16 LE
+    /// (format EXACT attendu par VYRA Studio ; cf. TcpSink.onAudioFrame côté Android).
+    func sendAudio(_ pcm: Data, sampleRate: Int, channels: Int, ptsUs: Int64) {
+        var payload = Data()
+        payload.reserveCapacity(6 + pcm.count)
+        var sr = UInt32(sampleRate).littleEndian
+        withUnsafeBytes(of: &sr) { payload.append(contentsOf: $0) }
+        var ch = UInt16(channels).littleEndian
+        withUnsafeBytes(of: &ch) { payload.append(contentsOf: $0) }
+        payload.append(pcm)
+        writeFrame(type: .audio, flags: 0, ptsUs: ptsUs, payload: payload)
+    }
+
     func close() {
         conn?.cancel()
         conn = nil

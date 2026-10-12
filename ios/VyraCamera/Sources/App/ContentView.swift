@@ -88,6 +88,12 @@ struct ContentView: View {
                     Text("ou saisir l'adresse manuellement").font(.caption).foregroundColor(sage)
                 }
 
+                Toggle(isOn: Binding(get: { manager.micEnabled }, set: { manager.micEnabled = $0 })) {
+                    Label("Micro", systemImage: manager.micEnabled ? "mic.fill" : "mic.slash.fill")
+                        .foregroundColor(ink).font(.subheadline)
+                }
+                .tint(green)
+
                 HStack(spacing: 10) {
                     field("Adresse IP de la régie", text: $host, keyboard: .decimalPad)
                     field("Port", text: $port, keyboard: .numberPad).frame(width: 90)

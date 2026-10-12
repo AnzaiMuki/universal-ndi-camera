@@ -13,6 +13,7 @@ final class StreamManager: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var status: String = "Prêt"
     @Published var deviceName: String = UIDevice.current.name
+    @Published var micEnabled = true   // l'audio est optionnel ; activable avant le direct
 
     // Paramètres du flux (version minimale : 720p30 ≈ 4 Mbit/s).
     private let width = 1280, height = 720, fps = 30, bitrate = 4_000_000
@@ -20,6 +21,7 @@ final class StreamManager: ObservableObject {
     let capture = CameraCapture()
     private var encoder: H264Encoder?
     private let client = UndiClient()
+    private let audio = AudioCapture()
 
     private var previewStarted = false
 
@@ -90,6 +92,12 @@ final class StreamManager: ObservableObject {
             enc.encode(pixel, ptsUs: ptsUs)
         }
 
+        // Audio OPTIONNEL : s'il échoue, la vidéo continue (comme côté Android).
+        if micEnabled {
+            audio.onPCM = { pcm, sr, ch, pts in client.sendAudio(pcm, sampleRate: sr, channels: ch, ptsUs: pts) }
+            audio.start()
+        }
+
         state = .streaming
         status = "En direct"
     }
@@ -99,6 +107,7 @@ final class StreamManager: ObservableObject {
     /// Arrête le direct mais garde l'aperçu caméra actif (on peut relancer aussitôt).
     func stop() {
         capture.onSample = nil
+        audio.stop()
         encoder?.stop()
         encoder = nil
         client.close()
@@ -115,6 +124,7 @@ final class StreamManager: ObservableObject {
 
     private func fail(_ message: String) {
         capture.onSample = nil
+        audio.stop()
         encoder?.stop(); encoder = nil
         client.close()
         state = .failed(message)
