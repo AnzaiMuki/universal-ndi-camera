@@ -1,0 +1,7 @@
+// Module Clang exposant libsrt (compilé dans le CI) à Swift. Le chemin des en-têtes et de la
+// bibliothèque est fourni au moment de la compilation (HEADER_SEARCH_PATHS / LIBRARY_SEARCH_PATHS).
+module CSrt {
+    header "shim.h"
+    link "srt"
+    export *
+}

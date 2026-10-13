@@ -141,6 +141,14 @@ struct ContentView: View {
                     Text("ou saisir l'adresse manuellement").font(.caption).foregroundColor(sage)
                 }
 
+                #if SRT_ENABLED
+                Picker("Transport", selection: Binding(get: { manager.transport }, set: { manager.transport = $0 })) {
+                    Text("NDI (local)").tag(StreamManager.Transport.tcp)
+                    Text("SRT (distant)").tag(StreamManager.Transport.srt)
+                }
+                .pickerStyle(.segmented)
+                #endif
+
                 Toggle(isOn: Binding(get: { manager.micEnabled }, set: { manager.micEnabled = $0 })) {
                     Label("Micro", systemImage: manager.micEnabled ? "mic.fill" : "mic.slash.fill")
                         .foregroundColor(ink).font(.subheadline)

@@ -3,7 +3,7 @@ import Network
 
 // Client réseau TCP vers VYRA Studio (Network.framework). Émission (HELLO, STREAM_CONFIG, VIDEO,
 // AUDIO, STATS, REPLY, écho CONTROL) ET réception du canal retour (TALLY, CONTROL, CUE, SEEN).
-final class UndiClient {
+final class UndiClient: Uplink {
     private var conn: NWConnection?
     private let queue = DispatchQueue(label: "com.ndicam.undi.client")
     private var sequence: UInt32 = 0

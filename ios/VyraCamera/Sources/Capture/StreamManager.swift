@@ -9,6 +9,7 @@ import UIKit
 @MainActor
 final class StreamManager: ObservableObject {
     enum State: Equatable { case idle, connecting, streaming, failed(String) }
+    enum Transport { case tcp, srt }   // NDI/TCP (défaut) ou SRT (diffusion à distance)
 
     // Drapeau de pause lu sur la file de capture (hors thread principal) : type référence partagé.
     private final class Flags { var paused = false }
@@ -17,6 +18,7 @@ final class StreamManager: ObservableObject {
     @Published private(set) var status: String = "Prêt"
     @Published var deviceName: String = UIDevice.current.name
     @Published var micEnabled = true
+    @Published var transport: Transport = .tcp
 
     // Canal retour, pour le HUD.
     @Published private(set) var tally: TallyState = .off
@@ -38,7 +40,7 @@ final class StreamManager: ObservableObject {
 
     let capture = CameraCapture()
     private var encoder: H264Encoder?
-    private let client = UndiClient()
+    private var client: Uplink = UndiClient()
     private let audio = AudioCapture()
     private let flags = Flags()
 
@@ -52,12 +54,25 @@ final class StreamManager: ObservableObject {
     private let maxReconnect: TimeInterval = 90   // reprise bornée (comme Android) puis abandon
 
     init() {
+        wireCallbacks()
+    }
+
+    /// (Re)câble les callbacks sur le transport courant — à rappeler après un changement de transport.
+    private func wireCallbacks() {
         client.onStatus = { [weak self] s in Task { @MainActor in self?.status = s } }
         client.onTally = { [weak self] t in Task { @MainActor in self?.tally = t } }
         client.onCue = { [weak self] c in Task { @MainActor in self?.showCue(c) } }
         client.onSeen = { [weak self] in Task { @MainActor in self?.markReplySeen() } }
         client.onCommand = { [weak self] cmd in Task { @MainActor in self?.apply(cmd) } }
         client.onDisconnected = { [weak self] in Task { @MainActor in self?.handleDisconnect() } }
+    }
+
+    /// Choisit le transport (TCP/NDI ou SRT) et recâble les callbacks.
+    private func selectTransport() {
+        #if SRT_ENABLED
+        if transport == .srt { client = SrtClient(); wireCallbacks(); return }
+        #endif
+        client = UndiClient(); wireCallbacks()
     }
 
     var isStreaming: Bool { if case .streaming = state { return true }; return false }
@@ -80,11 +95,16 @@ final class StreamManager: ObservableObject {
     // MARK: - Démarrage
 
     func startManual(host: String, port: UInt16) {
+        selectTransport()
         beginConnect { completion in self.client.connect(host: host, port: port, completion: completion) }
     }
 
     func startDiscovered(_ found: Discovery.Found) {
-        beginConnect { completion in self.client.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
+        // La découverte Bonjour est propre au TCP/NDI.
+        transport = .tcp
+        selectTransport()
+        guard let tcp = client as? UndiClient else { return }
+        beginConnect { completion in tcp.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
     }
 
     private func beginConnect(_ connect: @escaping (@escaping (Bool) -> Void) -> Void) {
