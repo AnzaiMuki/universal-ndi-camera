@@ -4,7 +4,7 @@ App iOS native (Swift / SwiftUI) qui transforme un iPhone en caméra pour **VYRA
 parlant **exactement le même protocole UNDI** que l'app Android (en-tête 24 octets, H.264 Annex-B,
 Bonjour `_undicam._tcp`, port TCP **6789**). Aucune caméra à acheter, aucun abonnement.
 
-## Ce que fait cette v0.4 (parité avec l'app Android, sauf SRT)
+## Ce que fait cette v0.5 (parité avec l'app Android)
 
 - Aperçu caméra plein écran (caméra arrière, **720p / 1080p / 2160p**, débit réglable).
 - Connexion à la régie : **régie détectée sur le réseau** (Bonjour) **ou IP saisie à la main**.
@@ -16,10 +16,12 @@ Bonjour `_undicam._tcp`, port TCP **6789**). Aucune caméra à acheter, aucun ab
   résolution — tout borné aux capacités du capteur, et **ré-émis au pont** (il affiche la vérité).
 - **Télémétrie** batterie / charge / niveau thermique toutes les 5 s.
 - **Reconnexion bornée 90 s** (reprise d'une micro-coupure, puis abandon) — comme l'Android.
+- **Transport SRT** (diffusion à distance) en plus du NDI/TCP local : **libsrt** natif (compilé dans
+  le CI, sans chiffrement), trames UNDI paquetisées (`SrtPacket`) + réassemblage résistant à la perte.
 
-Hors parité pour l'instant : **SRT** (l'Android s'appuie sur la bibliothèque native *libsrt* via
-`srtdroid` ; la porter sur iOS demande un xcframework `libsrt`, à faire dans un second temps) ;
-caméra frontale. Le chemin principal en réseau local (**NDI via TCP**) est complet.
+Reste : caméra frontale. **SRT** est intégré et **vérifié à la compilation + l'édition de liens**
+dans le CI (job `srt-build` + archive) ; comme le reste de l'app, son **comportement réel se valide
+sur iPhone physique** face à VYRA Studio (le simulateur n'a ni caméra ni réseau SRT entrant).
 
 ## Tester GRATUITEMENT (sans appareil, sans Mac)
 

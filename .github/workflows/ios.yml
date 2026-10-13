@@ -120,14 +120,30 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Installer XcodeGen
-        run: brew install xcodegen
+      - name: Installer CMake + XcodeGen
+        run: brew install cmake xcodegen
+
+      - name: Compiler libsrt (iphoneos arm64, sans chiffrement)
+        run: |
+          git clone --depth 1 https://github.com/Haivision/srt.git "$RUNNER_TEMP/srt"
+          cd "$RUNNER_TEMP/srt"
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/srtinstall" \
+            -DENABLE_ENCRYPTION=OFF -DENABLE_APPS=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DENABLE_STDCXX_SYNC=ON
+          cmake --build build --config Release -j3
+          cmake --install build
 
       - name: Générer le projet Xcode
         run: xcodegen generate
 
-      - name: Compiler (archive non signée)
+      - name: Compiler (archive non signée, SRT activé)
         run: |
+          SRT="$RUNNER_TEMP/srtinstall"
           xcodebuild \
             -project VyraCamera.xcodeproj \
             -scheme VyraCamera \
@@ -135,7 +151,12 @@ jobs:
             -sdk iphoneos \
             -archivePath "$RUNNER_TEMP/VyraCamera.xcarchive" \
             archive \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="SRT_ENABLED" \
+            HEADER_SEARCH_PATHS="$SRT/include" \
+            LIBRARY_SEARCH_PATHS="$SRT/lib" \
+            OTHER_LDFLAGS="-lsrt -lc++" \
+            OTHER_SWIFT_FLAGS="-Xcc -fmodule-map-file=$PWD/CSrt/module.modulemap -Xcc -I$SRT/include"
 
       - name: Empaqueter en .ipa non signé
         run: |
