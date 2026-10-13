@@ -19,15 +19,19 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera
-        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: VYRA Camera
-        UILaunchScreen: {}
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+          UIImageName: LaunchLogo
+          UIImageRespectsSafeAreaInsets: true
         NSCameraUsageDescription: "VYRA Camera utilise la caméra pour filmer et diffuser vers VYRA Studio."
         NSMicrophoneUsageDescription: "VYRA Camera utilise le micro pour la prise de son du direct."
         NSLocalNetworkUsageDescription: "VYRA Camera se connecte à VYRA Studio sur votre réseau local (Wi-Fi)."
