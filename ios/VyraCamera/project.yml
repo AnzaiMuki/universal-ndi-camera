@@ -1,0 +1,66 @@
+# Spécification XcodeGen → génère VyraCamera.xcodeproj (pas de .pbxproj écrit à la main).
+# Le CI (GitHub Actions) lance `xcodegen generate` puis `xcodebuild`.
+name: VyraCamera
+options:
+  bundleIdPrefix: com.ndicam
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "0.5.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SWIFT_VERSION: "5.9"
+targets:
+  VyraCamera:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: VYRA Camera
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+          UIImageName: LaunchLogo
+          UIImageRespectsSafeAreaInsets: true
+        NSCameraUsageDescription: "VYRA Camera utilise la caméra pour filmer et diffuser vers VYRA Studio."
+        NSMicrophoneUsageDescription: "VYRA Camera utilise le micro pour la prise de son du direct."
+        NSLocalNetworkUsageDescription: "VYRA Camera se connecte à VYRA Studio sur votre réseau local (Wi-Fi)."
+        NSBonjourServices:
+          - _undicam._tcp
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  # Cible de tests : vérifie les formats filaires UNDI (A→Z, sans appareil ni caméra).
+  VyraCameraTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: VyraCamera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  VyraCamera:
+    build:
+      targets:
+        VyraCamera: all
+        VyraCameraTests: [test]
+    test:
+      targets:
+        - VyraCameraTests
