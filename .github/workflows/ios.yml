@@ -12,6 +12,34 @@ on:
   workflow_dispatch:   # bouton « Run workflow » dans l'onglet Actions
 
 jobs:
+  # Sonde de faisabilité : compile libsrt (natif C) pour iOS SIMULATEUR, chiffrement désactivé
+  # (donc sans OpenSSL). Valide qu'on peut obtenir le socket SRT sur iPhone avant d'intégrer SrtClient.
+  srt-probe:
+    runs-on: macos-14
+    steps:
+      - name: Installer CMake
+        run: brew install cmake
+      - name: Cloner libsrt
+        run: git clone --depth 1 https://github.com/Haivision/srt.git "$RUNNER_TEMP/srt"
+      - name: Compiler libsrt (iphonesimulator arm64, sans chiffrement)
+        run: |
+          cd "$RUNNER_TEMP/srt"
+          cmake -S . -B build-sim \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DENABLE_ENCRYPTION=OFF \
+            -DENABLE_APPS=OFF \
+            -DENABLE_SHARED=OFF \
+            -DENABLE_STATIC=ON \
+            -DENABLE_STDCXX_SYNC=ON
+          cmake --build build-sim --config Release -j3
+      - name: Vérifier les artefacts (lib + en-tête)
+        run: |
+          find "$RUNNER_TEMP/srt/build-sim" -name 'libsrt.a' -o -name 'srt.h' | sort
+          test -f "$RUNNER_TEMP/srt/build-sim/libsrt.a"
+
   # Tests de A à Z sur SIMULATEUR iOS (dans le cloud macOS, gratuit) : formats filaires UNDI
   # vérifiés octet par octet, puis l'app est installée et LANCÉE dans le simulateur (smoke test).
   # NB : le simulateur n'a pas de caméra → la captation réelle se teste sur iPhone physique.
