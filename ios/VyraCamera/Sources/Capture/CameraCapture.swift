@@ -25,6 +25,8 @@ final class CameraCapture: NSObject {
     private var zebraLuma: Int?
     private var peaking = false
     private var lastAnalysis: CFTimeInterval = 0
+    private var analysing = false   // une analyse à la fois ; les images arrivées entre-temps sont sautées
+    private let analysisQueue = DispatchQueue(label: "com.ndicam.analysis", qos: .utility)
     private static let analysisInterval: CFTimeInterval = 0.14
     var onAnalysis: ((ExposureAnalysis) -> Void)?   // appelée sur `queue`
 
@@ -80,11 +82,20 @@ final class CameraCapture: NSObject {
         lock.unlock()
         others.forEach { $0(sample) }
 
-        guard analyse, let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
+        // L'analyse vit HORS du chemin de l'encodeur (file dédiée), comme le flux d'analyse séparé
+        // côté Android : elle ne doit jamais retarder une image diffusée.
+        guard analyse, !analysing, let pixel = CMSampleBufferGetImageBuffer(sample) else { return }
         let now = CACurrentMediaTime()
         guard now - lastAnalysis >= Self.analysisInterval else { return }
         lastAnalysis = now
-        onAnalysis?(ExposureAnalysis.of(pixel, zebraLuma: z, peaking: p))
+        analysing = true
+        analysisQueue.async { [weak self] in
+            let result = ExposureAnalysis.of(pixel, zebraLuma: z, peaking: p)
+            self?.queue.async {
+                self?.analysing = false
+                self?.onAnalysis?(result)
+            }
+        }
     }
 
     // MARK: - Session
