@@ -79,22 +79,22 @@ final class H264Encoder {
             onConfig?(cfg)
         }
         guard let bb = CMSampleBufferGetDataBuffer(sb) else { return }
-        var lengthAtOffset = 0, totalLength = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(bb, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: &totalLength, dataPointerOut: &dataPointer) == noErr,
-              let ptr = dataPointer else { return }
-        let raw = UnsafeRawPointer(ptr)
+        // Le tampon compressé peut être fragmenté (grosses images clés) : on le recopie d'un bloc
+        // plutôt que de lire `totalLength` octets derrière un pointeur qui n'en couvre qu'une partie.
+        let totalLength = CMBlockBufferGetDataLength(bb)
+        var avcc = [UInt8](repeating: 0, count: totalLength)
+        guard CMBlockBufferCopyDataBytes(bb, atOffset: 0, dataLength: totalLength, destination: &avcc) == kCMBlockBufferNoErr else { return }
         let startCode: [UInt8] = [0, 0, 0, 1]
         var out = Data()
+        out.reserveCapacity(totalLength + 16)
         var i = 0
         while i + 4 <= totalLength {
-            var beLen: UInt32 = 0
-            memcpy(&beLen, raw + i, 4)                 // préfixe de longueur AVCC (big-endian)
-            let nalLen = Int(CFSwapInt32BigToHost(beLen))
+            // préfixe de longueur AVCC (big-endian)
+            let nalLen = Int(avcc[i]) << 24 | Int(avcc[i + 1]) << 16 | Int(avcc[i + 2]) << 8 | Int(avcc[i + 3])
             i += 4
             if nalLen <= 0 || i + nalLen > totalLength { break }
             out.append(contentsOf: startCode)
-            out.append(Data(bytes: raw + i, count: nalLen))
+            out.append(contentsOf: avcc[i..<(i + nalLen)])
             i += nalLen
         }
         if !out.isEmpty { onFrame?(out, ptsUs, keyframe) }

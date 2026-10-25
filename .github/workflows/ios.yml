@@ -112,9 +112,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VyraCamera-test-bout-en-bout
-          path: |
-            ${{ runner.temp }}/e2e
-            ${{ runner.temp }}/Resultats.xcresult
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: warn
+      - name: Publier le rapport Xcode complet
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-rapport-xcresult
+          path: ${{ runner.temp }}/Resultats.xcresult
           if-no-files-found: warn
       - name: Smoke test (installe + lance l'app dans le simulateur)
         run: |
