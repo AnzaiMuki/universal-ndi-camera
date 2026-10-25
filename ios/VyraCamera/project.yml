@@ -58,12 +58,31 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera.tests
         GENERATE_INFOPLIST_FILE: "YES"
 
+  # Test de bout en bout : le test joue VYRA Studio et pilote l'app (mode câble USB) dans le simulateur.
+  # Il réutilise les sources du protocole pour lire/écrire les trames UNDI.
+  VyraCameraUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+      - path: Sources/Protocol/UndiProtocol.swift
+      - path: Sources/Protocol/UndiMessages.swift
+    dependencies:
+      - target: VyraCamera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ndicam.vyracamera.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: VyraCamera
+
 schemes:
   VyraCamera:
     build:
       targets:
         VyraCamera: all
         VyraCameraTests: [test]
+        VyraCameraUITests: [test]
     test:
       targets:
         - VyraCameraTests
+        - VyraCameraUITests

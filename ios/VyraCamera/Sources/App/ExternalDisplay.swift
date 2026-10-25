@@ -30,7 +30,7 @@ final class ExternalDisplay: ObservableObject {
         clean = UserDefaults.standard.object(forKey: Self.cleanKey) as? Bool ?? true
     }
 
-    fileprivate func attach(_ layer: AVSampleBufferDisplayLayer?) {
+    func attach(_ layer: AVSampleBufferDisplayLayer?) {
         self.layer = layer
         connected = layer != nil
         route()

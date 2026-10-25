@@ -23,7 +23,19 @@ final class CameraCapture: NSObject {
         sinkLock.lock(); externalSink = sink; sinkLock.unlock()
     }
 
+    var hasExternalSink: Bool {
+        sinkLock.lock(); defer { sinkLock.unlock() }
+        return externalSink != nil
+    }
+
+    #if targetEnvironment(simulator)
+    private let simulatorCamera = SimulatorCamera()   // mire de remplacement (le simulateur n'a pas de caméra)
+    #endif
+
     static func requestAccess(_ done: @escaping (Bool) -> Void) {
+        #if targetEnvironment(simulator)
+        done(true); return   // mire de synthèse : aucune autorisation caméra à demander
+        #endif
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: done(true)
         case .notDetermined: AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { done(ok) } }
@@ -58,11 +70,17 @@ final class CameraCapture: NSObject {
     }
 
     func start() {
+        #if targetEnvironment(simulator)
+        simulatorCamera.start(on: queue) { [weak self] sample in self?.deliver(sample) }
+        #endif
         guard !session.isRunning else { return }
         queue.async { [weak self] in self?.session.startRunning() }
     }
 
     func stop() {
+        #if targetEnvironment(simulator)
+        simulatorCamera.stop()
+        #endif
         guard session.isRunning else { return }
         queue.async { [weak self] in self?.session.stopRunning() }
     }
@@ -170,9 +188,14 @@ final class CameraCapture: NSObject {
 
 extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        onSample?(sampleBuffer)
+        deliver(sampleBuffer)
+    }
+
+    /// Distribue une image à l'encodeur et à la sortie HDMI (sur `queue`).
+    func deliver(_ sample: CMSampleBuffer) {
+        onSample?(sample)
         sinkLock.lock(); let sink = externalSink; sinkLock.unlock()
-        sink?(sampleBuffer)
+        sink?(sample)
     }
 }
 
