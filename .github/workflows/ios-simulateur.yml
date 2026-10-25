@@ -1,0 +1,47 @@
+name: Build simulateur iOS (Appetize)
+
+# Compile VYRA Camera pour le SIMULATEUR iPhone (arm64 + x86_64) et publie VyraCamera.app zippé.
+# Ce .zip est envoyé à Appetize.io par l'extension VS Code « VYRA Simulateur » pour manipuler
+# l'app en direct dans l'éditeur. Le simulateur n'a pas de caméra → l'app affiche la mire.
+
+on:
+  push:
+    paths: ["ios/VyraCamera/**", ".github/workflows/ios-simulateur.yml"]
+  workflow_dispatch:
+
+jobs:
+  simulateur:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios/VyraCamera
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sélectionner Xcode 16
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+      - name: Compiler pour le simulateur (universel)
+        run: |
+          xcodebuild build \
+            -project VyraCamera.xcodeproj \
+            -scheme VyraCamera \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$RUNNER_TEMP/DD" \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Zipper VyraCamera.app
+        run: |
+          APP=$(find "$RUNNER_TEMP/DD" -name 'VyraCamera.app' -path '*-iphonesimulator*' | head -1)
+          (cd "$(dirname "$APP")" && zip -r -y "$RUNNER_TEMP/VyraCamera-simulateur.zip" VyraCamera.app >/dev/null)
+      - name: Publier l'artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-simulateur
+          path: ${{ runner.temp }}/VyraCamera-simulateur.zip
+          if-no-files-found: error

@@ -1,0 +1,10 @@
+# Xcode / iOS — le projet est GÉNÉRÉ par XcodeGen (project.yml), on ne versionne pas le .xcodeproj.
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+build/
+*.ipa
+*.xcarchive
+
+# macOS
+.DS_Store
