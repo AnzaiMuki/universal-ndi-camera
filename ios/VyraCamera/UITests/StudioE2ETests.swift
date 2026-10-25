@@ -37,7 +37,7 @@ final class StudioE2ETests: XCTestCase {
         app.buttons["95%"].tap()
         sleep(1)
         shot("03-outil-exposition")
-        app.buttons["tool-guides"].tap()
+        app.buttons["tool-grid"].tap()
         app.buttons["Niveau"].tap()
         shot("04-outil-reperes")
         app.buttons["Niveau"].tap()
