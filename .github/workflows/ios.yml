@@ -150,6 +150,8 @@ jobs:
   build:
     runs-on: macos-14
     needs: test
+    permissions:
+      contents: write   # publication de la préversion ios-beta (installation gratuite via AltStore)
     defaults:
       run:
         working-directory: ios/VyraCamera
@@ -195,6 +197,7 @@ jobs:
             -archivePath "$RUNNER_TEMP/VyraCamera.xcarchive" \
             archive \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS="SRT_ENABLED" \
             HEADER_SEARCH_PATHS="$SRT/include" \
             LIBRARY_SEARCH_PATHS="$SRT/lib" \
@@ -214,3 +217,22 @@ jobs:
           name: VyraCamera-unsigned-ipa
           path: ${{ runner.temp }}/VyraCamera-unsigned.ipa
           if-no-files-found: error
+
+      # Installation gratuite sur iPhone : AltStore (identifiant Apple gratuit) lit la source
+      # altstore.json et installe / renouvelle l'app. Préversion jamais « Latest » (v1.x = Android/Studio).
+      - name: Publier la préversion ios-beta (.ipa + source AltStore)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPOT: ${{ github.repository }}
+        run: |
+          cp "$RUNNER_TEMP/VyraCamera-unsigned.ipa" "$RUNNER_TEMP/VyraCamera.ipa"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/altstore_source.py" \
+            "$RUNNER_TEMP/Payload/VyraCamera.app/Info.plist" "$RUNNER_TEMP/VyraCamera.ipa" \
+            "$DEPOT" > "$RUNNER_TEMP/altstore.json"
+          cat "$RUNNER_TEMP/altstore.json"
+          gh release view ios-beta -R "$DEPOT" >/dev/null 2>&1 || \
+            gh release create ios-beta -R "$DEPOT" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "VYRA Camera iPhone (bêta)" \
+              --notes "Installation gratuite : voir ios/VyraCamera/INSTALLER-SUR-IPHONE.md. Source AltStore : https://github.com/$DEPOT/releases/download/ios-beta/altstore.json"
+          gh release upload ios-beta -R "$DEPOT" --clobber "$RUNNER_TEMP/VyraCamera.ipa" "$RUNNER_TEMP/altstore.json"
