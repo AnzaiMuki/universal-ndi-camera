@@ -1,0 +1,29 @@
+{
+  "name": "vyra-simulateur",
+  "displayName": "VYRA Simulateur iPhone",
+  "description": "Manipule VYRA Camera en direct dans VS Code (simulateur iPhone Appetize, compilé par le CI GitHub).",
+  "version": "0.1.0",
+  "publisher": "godwill-agbomenou",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/AnzaiMuki/universal-ndi-camera" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Testing"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      { "command": "vyraSimulateur.ouvrir", "title": "Ouvrir le simulateur iPhone", "category": "VYRA" },
+      { "command": "vyraSimulateur.recompiler", "title": "Recompiler l'app pour le simulateur", "category": "VYRA" },
+      { "command": "vyraSimulateur.cle", "title": "Changer la clé d'API Appetize", "category": "VYRA" }
+    ],
+    "configuration": {
+      "title": "VYRA Simulateur",
+      "properties": {
+        "vyraSimulateur.depot": { "type": "string", "default": "AnzaiMuki/universal-ndi-camera", "description": "Dépôt GitHub (propriétaire/nom)." },
+        "vyraSimulateur.branche": { "type": "string", "default": "ios-camera-v0.1", "description": "Branche compilée par le CI." },
+        "vyraSimulateur.appareil": { "type": "string", "default": "iphone15pro", "description": "Modèle Appetize (ex. iphone15pro, iphonese3)." },
+        "vyraSimulateur.suivreCI": { "type": "boolean", "default": true, "description": "Recharger le simulateur à chaque nouvelle compilation réussie du CI." }
+      }
+    }
+  }
+}
