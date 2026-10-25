@@ -14,6 +14,15 @@ final class CameraCapture: NSObject {
     // Appelée pour chaque image capturée (sur `queue`).
     var onSample: ((CMSampleBuffer) -> Void)?
 
+    // Second consommateur des images brutes : la sortie HDMI « Caméra seule » (voir ExternalDisplay).
+    // Posé depuis le thread principal, lu sur `queue` : protégé par un verrou.
+    private let sinkLock = NSLock()
+    private var externalSink: ((CMSampleBuffer) -> Void)?
+
+    func setExternalSink(_ sink: ((CMSampleBuffer) -> Void)?) {
+        sinkLock.lock(); externalSink = sink; sinkLock.unlock()
+    }
+
     static func requestAccess(_ done: @escaping (Bool) -> Void) {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: done(true)
@@ -162,6 +171,8 @@ final class CameraCapture: NSObject {
 extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         onSample?(sampleBuffer)
+        sinkLock.lock(); let sink = externalSink; sinkLock.unlock()
+        sink?(sampleBuffer)
     }
 }
 

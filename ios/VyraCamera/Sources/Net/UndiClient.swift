@@ -5,6 +5,7 @@ import Network
 // AUDIO, STATS, REPLY, écho CONTROL) ET réception du canal retour (TALLY, CONTROL, CUE, SEEN).
 final class UndiClient: Uplink {
     private var conn: NWConnection?
+    private var listener: NWListener?   // mode câble USB : attente du pont (voir accept)
     private let queue = DispatchQueue(label: "com.ndicam.undi.client")
     private var sequence: UInt32 = 0
     private(set) var connected = false
@@ -28,15 +29,66 @@ final class UndiClient: Uplink {
 
     /// Connexion à un point de terminaison Bonjour découvert (`_undicam._tcp`).
     func connect(endpoint: NWEndpoint, label: String, completion: @escaping (Bool) -> Void) {
+        stopListening()
+        run(NWConnection(to: endpoint, using: Self.tcpParameters()), label: label, completion: completion)
+    }
+
+    /// Mode câble USB : iOS n'a pas d'équivalent à `adb reverse`, l'iPhone ne peut pas joindre le PC
+    /// par le câble. Il ÉCOUTE donc, et VYRA Studio vient à lui via usbmuxd (service Apple Mobile Device).
+    /// Écoute limitée au bouclage (là où usbmuxd livre ses connexions) : rien n'est exposé sur le Wi-Fi.
+    /// Abandon (`completion(false)`) si le pont ne s'est pas présenté au bout de `timeout` secondes.
+    func accept(port: UInt16, timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { completion(false); return }
+        let params = Self.tcpParameters()
+        params.requiredInterfaceType = .loopback
+        params.allowLocalEndpointReuse = true
+        stopListening()
+        conn?.cancel()
+        conn = nil
+        guard let l = try? NWListener(using: params, on: nwPort) else { completion(false); return }
+        listener = l
+        // Tout se passe sur `queue` : ces drapeaux n'ont pas besoin de verrou.
+        var adopted = false
+        var done = false
+        let finish: (Bool) -> Void = { ok in if !done { done = true; completion(ok) } }
+        l.newConnectionHandler = { [weak self] c in
+            guard let self, !adopted else { c.cancel(); return }
+            adopted = true
+            self.stopListening()
+            self.run(c, label: "VYRA Studio (câble USB)", completion: finish)
+        }
+        l.stateUpdateHandler = { [weak self] state in
+            if case .failed(_) = state, !adopted { self?.stopListening(); finish(false) }
+        }
+        onStatus?("En attente de VYRA Studio par câble…")
+        l.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard !adopted else { return }
+            self?.stopListening()
+            finish(false)
+        }
+    }
+
+    private func stopListening() {
+        listener?.newConnectionHandler = nil
+        listener?.cancel()
+        listener = nil
+    }
+
+    private static func tcpParameters() -> NWParameters {
         let params = NWParameters.tcp
         if let tcp = params.defaultProtocolStack.internetProtocol as? NWProtocolTCP.Options {
             tcp.noDelay = true               // latence : désactive Nagle
             tcp.connectionTimeout = 5        // secondes
         }
+        return params
+    }
+
+    /// Prend en charge une connexion (sortante ou acceptée) : même cycle de vie dans les deux sens.
+    private func run(_ c: NWConnection, label: String, completion: @escaping (Bool) -> Void) {
         conn?.cancel()                 // abandonne une éventuelle connexion précédente
         closing = false
         didConnect = false
-        let c = NWConnection(to: endpoint, using: params)
         conn = c
         var done = false
         c.stateUpdateHandler = { [weak self] state in
@@ -167,6 +219,7 @@ final class UndiClient: Uplink {
     }
 
     func close() {
+        stopListening()
         closing = true
         didConnect = false
         conn?.cancel()

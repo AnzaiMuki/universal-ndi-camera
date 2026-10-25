@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var manager: StreamManager
     @EnvironmentObject private var discovery: Discovery
+    @ObservedObject private var hdmi = ExternalDisplay.shared
 
     @State private var host = ""
     @State private var port = "6789"   // port TCP par défaut de VYRA Studio
@@ -30,6 +31,7 @@ struct ContentView: View {
 
             VStack(spacing: 12) {
                 header
+                if hdmi.connected { HStack { HdmiBanner(display: hdmi); Spacer() } }
                 if manager.isStreaming { tallyBar }
                 Spacer()
                 if let c = manager.cue { cueBanner(c) }
@@ -123,7 +125,19 @@ struct ContentView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 14) {
-                if !discovery.services.isEmpty {
+                // Mode de connexion : réseau ou câble USB (comme l'Android).
+                Picker("Connexion", selection: Binding(get: { manager.link }, set: { manager.link = $0 })) {
+                    Text("Wi-Fi").tag(StreamManager.Link.wifi)
+                    Text("USB (câble)").tag(StreamManager.Link.usb)
+                }
+                .pickerStyle(.segmented)
+
+                if manager.link == .usb {
+                    Text("Branchez l'iPhone au PC avec son câble. iTunes ou l'app Appareils Apple doit être installé sur le PC.")
+                        .font(.caption).foregroundColor(sage)
+                }
+
+                if manager.link == .wifi, !discovery.services.isEmpty {
                     Text("RÉGIES SUR LE RÉSEAU").font(.system(.caption2, design: .monospaced))
                         .tracking(2).foregroundColor(green)
                     ForEach(discovery.services) { s in
@@ -142,11 +156,13 @@ struct ContentView: View {
                 }
 
                 #if SRT_ENABLED
-                Picker("Transport", selection: Binding(get: { manager.transport }, set: { manager.transport = $0 })) {
-                    Text("NDI (local)").tag(StreamManager.Transport.tcp)
-                    Text("SRT (distant)").tag(StreamManager.Transport.srt)
+                if manager.link == .wifi {
+                    Picker("Transport", selection: Binding(get: { manager.transport }, set: { manager.transport = $0 })) {
+                        Text("NDI (local)").tag(StreamManager.Transport.tcp)
+                        Text("SRT (distant)").tag(StreamManager.Transport.srt)
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
                 #endif
 
                 Toggle(isOn: Binding(get: { manager.micEnabled }, set: { manager.micEnabled = $0 })) {
@@ -155,19 +171,21 @@ struct ContentView: View {
                 }
                 .tint(green)
 
-                HStack(spacing: 10) {
-                    field("Adresse IP de la régie", text: $host, keyboard: .decimalPad)
-                    field("Port", text: $port, keyboard: .numberPad).frame(width: 90)
+                if manager.link == .wifi {
+                    HStack(spacing: 10) {
+                        field("Adresse IP de la régie", text: $host, keyboard: .decimalPad)
+                        field("Port", text: $port, keyboard: .numberPad).frame(width: 90)
+                    }
                 }
 
-                Button(action: connectManual) {
+                Button { manager.link == .usb ? manager.startUsb() : connectManual() } label: {
                     Label(manager.state == .connecting ? "Connexion…" : "Passer en direct", systemImage: "dot.radiowaves.left.and.right")
                         .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 16)
                 }
                 .foregroundColor(.white)
                 .background(Color(red: 0.086, green: 0.639, blue: 0.290), in: RoundedRectangle(cornerRadius: 16)) // #16A34A
-                .disabled(host.isEmpty || manager.state == .connecting)
-                .opacity(host.isEmpty ? 0.5 : 1)
+                .disabled(needsHost || manager.state == .connecting)
+                .opacity(needsHost ? 0.5 : 1)
             }
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
@@ -210,6 +228,8 @@ struct ContentView: View {
             .padding(.vertical, 12).padding(.horizontal, 14)
             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
+
+    private var needsHost: Bool { manager.link == .wifi && host.isEmpty }
 
     private func connectManual() {
         guard let p = UInt16(port.trimmingCharacters(in: .whitespaces)) else { return }

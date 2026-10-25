@@ -10,6 +10,7 @@ import UIKit
 final class StreamManager: ObservableObject {
     enum State: Equatable { case idle, connecting, streaming, failed(String) }
     enum Transport { case tcp, srt }   // NDI/TCP (défaut) ou SRT (diffusion à distance)
+    enum Link: String { case wifi, usb }   // réseau (défaut) ou câble USB (toujours en TCP)
 
     // Drapeau de pause lu sur la file de capture (hors thread principal) : type référence partagé.
     private final class Flags { var paused = false }
@@ -19,6 +20,12 @@ final class StreamManager: ObservableObject {
     @Published var deviceName: String = UIDevice.current.name
     @Published var micEnabled = true
     @Published var transport: Transport = .tcp
+    /// Mode de connexion choisi, mémorisé entre les sessions (comme l'Android).
+    @Published var link: Link = Link(rawValue: UserDefaults.standard.string(forKey: "vyra_link") ?? "") ?? .wifi {
+        didSet { UserDefaults.standard.set(link.rawValue, forKey: "vyra_link") }
+    }
+    private static let usbPort: UInt16 = 6789     // port écouté par l'iPhone ; VYRA Studio s'y raccorde
+    private static let usbWait: TimeInterval = 30 // attente du pont par câble avant d'abandonner
 
     // Canal retour, pour le HUD.
     @Published private(set) var tally: TallyState = .off
@@ -107,8 +114,19 @@ final class StreamManager: ObservableObject {
         beginConnect { completion in tcp.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
     }
 
-    private func beginConnect(_ connect: @escaping (@escaping (Bool) -> Void) -> Void) {
-        guard state == .idle else { return }
+    /// Câble USB : l'iPhone attend que VYRA Studio le rejoigne par le câble (voir UndiClient.accept).
+    func startUsb() {
+        transport = .tcp   // SRT/UDP ne traverse pas le tunnel USB
+        selectTransport()
+        guard let tcp = client as? UndiClient else { return }
+        beginConnect(failure: "VYRA Studio introuvable par câble") { completion in
+            tcp.accept(port: Self.usbPort, timeout: Self.usbWait, completion: completion)
+        }
+    }
+
+    private func beginConnect(failure: String = "Connexion impossible",
+                              _ connect: @escaping (@escaping (Bool) -> Void) -> Void) {
+        if state == .connecting || isStreaming { return }   // un échec précédent n'empêche pas de réessayer
         lastConnect = connect
         state = .connecting
         status = "Connexion…"
@@ -117,7 +135,7 @@ final class StreamManager: ObservableObject {
                 guard let self else { return }
                 guard granted else { self.fail("Accès caméra refusé"); return }
                 connect { ok in
-                    Task { @MainActor in ok ? self.onConnected() : self.fail("Connexion impossible") }
+                    Task { @MainActor in ok ? self.onConnected() : self.fail(failure) }
                 }
             }
         }

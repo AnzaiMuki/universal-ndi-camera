@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: "0.5.0"
+    MARKETING_VERSION: "0.6.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     TARGETED_DEVICE_FAMILY: "1,2"
@@ -35,6 +35,9 @@ targets:
         NSCameraUsageDescription: "VYRA Camera utilise la caméra pour filmer et diffuser vers VYRA Studio."
         NSMicrophoneUsageDescription: "VYRA Camera utilise le micro pour la prise de son du direct."
         NSLocalNetworkUsageDescription: "VYRA Camera se connecte à VYRA Studio sur votre réseau local (Wi-Fi)."
+        # Application à scènes : requis pour recevoir la scène de l'écran externe (sortie HDMI).
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
         NSBonjourServices:
           - _undicam._tcp
         UISupportedInterfaceOrientations:
