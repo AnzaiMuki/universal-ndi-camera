@@ -28,6 +28,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: VYRA Camera
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)   # numéro du run CI : AltStore détecte les mises à jour
         UILaunchScreen:
           UIColorName: LaunchBackground
           UIImageName: LaunchLogo
