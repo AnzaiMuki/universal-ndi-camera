@@ -42,14 +42,19 @@ final class StudioE2ETests: XCTestCase {
         XCTAssertEqual(u32(cfg.payload, 5), 720)
         XCTAssertEqual(u32(cfg.payload, 9), 30)
 
-        // Vidéo pendant 3 s : SPS/PPS, image clé, cadence.
+        // Vidéo : SPS/PPS, image clé, puis 45 images (le démarrage de l'encodeur peut prendre
+        // plusieurs secondes dans le simulateur : on l'attend jusqu'à 20 s).
         var video = Data()
         var frames = 0, sawConfig = false, sawKey = false
         var nalTypes = Set<UInt8>()   // types NAL vus (5 = IDR, 1 = P, 7/8 = SPS/PPS) : diagnostic
-        let end = Date().addingTimeInterval(3)
-        while Date() < end {
+        var firstFrameAt: Date?
+        let deadline = Date().addingTimeInterval(20)
+        while frames < 45, Date() < deadline {
             let f = try studio.next(.video)
-            if f.flags & UndiProtocol.flagConfig != 0 { sawConfig = true } else { frames += 1 }
+            if f.flags & UndiProtocol.flagConfig != 0 { sawConfig = true } else {
+                frames += 1
+                if firstFrameAt == nil { firstFrameAt = Date() }
+            }
             if f.flags & UndiProtocol.flagKeyframe != 0 { sawKey = true }
             let b = [UInt8](f.payload)
             for k in 0..<max(0, b.count - 4) where b[k] == 0 && b[k + 1] == 0 && b[k + 2] == 0 && b[k + 3] == 1 {
@@ -57,10 +62,14 @@ final class StudioE2ETests: XCTestCase {
             }
             video.append(f.payload)
         }
+        let fps = firstFrameAt.map { Double(max(frames - 1, 0)) / max(Date().timeIntervalSince($0), 0.001) } ?? 0
+        let report = "images=\(frames) cadence=\(String(format: "%.1f", fps)) i/s types_nal=\(nalTypes.sorted())\n"
+        save(Data(report.utf8), "video.txt")
         save(video, "flux.h264")
         XCTAssertTrue(sawConfig, "SPS/PPS jamais envoyés")
         XCTAssertTrue(sawKey, "aucune image clé (\(frames) images, types NAL \(nalTypes.sorted()))")
-        XCTAssertGreaterThanOrEqual(frames, 20, "cadence trop basse : \(frames) images en 3 s")
+        XCTAssertEqual(frames, 45, "flux interrompu : \(frames) images en 20 s")
+        XCTAssertGreaterThanOrEqual(fps, 15, "cadence trop basse : \(fps) i/s")
         XCTAssertTrue(app.buttons["Arrêter le direct"].exists)
         shot("3-en-direct")
 
