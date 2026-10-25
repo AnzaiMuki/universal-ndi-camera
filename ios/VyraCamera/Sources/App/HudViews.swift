@@ -57,15 +57,16 @@ struct TimecodeStatus: View {
     let paused: Bool
     let bridgeName: String?
     let usb: Bool
-
-    @State private var seconds = 0
-    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    let liveSince: Date?
 
     var body: some View {
         VStack(spacing: 0) {
             if state == .streaming {
-                Text(String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60))
-                    .tracking(1).font(.mono(30)).foregroundColor(.white).readoutShadow()
+                TimelineView(.periodic(from: liveSince ?? Date(), by: 1)) { ctx in
+                    let seconds = max(Int(ctx.date.timeIntervalSince(liveSince ?? ctx.date)), 0)
+                    Text(String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60))
+                        .tracking(1).font(.mono(30)).foregroundColor(.white).readoutShadow()
+                }
                 let sub = paused ? ("SIGNAL COUPÉ", Vyra.amber) : ("EN DIRECT · NDI", Vyra.live)
                 HStack(spacing: 6) {
                     Circle().fill(sub.1).frame(width: 7, height: 7)
@@ -77,8 +78,6 @@ struct TimecodeStatus: View {
                     .foregroundColor(.white.opacity(0.92)).readoutShadow()
             }
         }
-        .onReceive(tick) { _ in if state == .streaming { seconds += 1 } }
-        .onChange(of: state) { _ in seconds = 0 }
     }
 
     private var label: String {

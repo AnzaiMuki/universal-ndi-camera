@@ -105,7 +105,7 @@ struct CameraScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             TimecodeStatus(state: m.state, previewReady: m.previewReady, paused: m.paused,
-                           bridgeName: m.bridgeName, usb: m.link == .usb)
+                           bridgeName: m.bridgeName, usb: m.link == .usb, liveSince: m.liveSince)
                 .padding(.top, 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 

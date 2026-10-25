@@ -26,6 +26,8 @@ final class StreamManager: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var status: String = "Prêt"
     @Published private(set) var previewReady = false
+    /// Début du direct en cours : base du timecode affiché.
+    @Published private(set) var liveSince: Date?
     @Published var deviceName: String = UIDevice.current.name
 
     // Connexion, mémorisée entre les sessions (comme ConnectionPrefs côté Android).
@@ -240,6 +242,7 @@ final class StreamManager: ObservableObject {
         startAdaptiveBitrate()
         state = .streaming
         status = "En direct"
+        liveSince = Date()
         echo()   // état initial vers le pont
     }
 
@@ -607,6 +610,7 @@ final class StreamManager: ObservableObject {
         paused = false
         flags.paused = false
         throughputBps = 0
+        liveSince = nil
         bridgeName = link == .wifi ? discovered?.name : nil
     }
 

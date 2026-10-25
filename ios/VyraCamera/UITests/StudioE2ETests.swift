@@ -127,6 +127,7 @@ final class StudioE2ETests: XCTestCase {
         shot("10-vu-par-la-regie")
 
         XCTAssertTrue(studio.received(.stats), "télémétrie batterie/thermique jamais reçue")
+        XCTAssertFalse(app.staticTexts["00:00:00"].exists, "le timecode du direct n'avance pas")
 
         live.tap()
         XCTAssertTrue(app.staticTexts["MODE CÂBLE USB"].waitForExistence(timeout: 5))
