@@ -16,6 +16,12 @@ final class AudioCapture {
     // Appelé pour chaque bloc converti : (PCM int16 LE, sampleRate, channels, ptsUs). Thread audio.
     var onPCM: ((Data, Int, Int, Int64) -> Void)?
     var onFailure: ((String) -> Void)?
+    // Vumètre : crête 0…1 sur une échelle en dB (-60 dBFS = 0), avec retenue. Thread audio.
+    var onLevel: ((Float) -> Void)?
+    private var peak: Float = 0
+    private var lastLevelPublish: Double = 0
+    private static let floorDbfs: Float = -60
+    private static let peakFallPerBlock: Float = 0.013   // ~1,5 s du haut vers le bas, comme Android
 
     // Gain linéaire appliqué au PCM avant envoi (1 = natif). Piloté à distance via setGainDb [-24,+24] dB.
     private var gainFactor: Float = 1
@@ -72,6 +78,8 @@ final class AudioCapture {
     func stop() {
         guard started else { return }
         started = false
+        peak = 0
+        onLevel?(0)
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
@@ -107,6 +115,15 @@ final class AudioCapture {
                 p[i] = Int16(min(max(v, -32768), 32767))
             }
         }
+
+        // Vumètre : crête du bloc avec descente progressive (une crête instantanée est illisible).
+        var maxAbs: Int32 = 0
+        for i in 0..<count { maxAbs = max(maxAbs, abs(Int32(ch[0][i]))) }
+        let blockPeak: Float = maxAbs == 0 ? 0
+            : ((20 * log10(Float(maxAbs) / 32768) - Self.floorDbfs) / -Self.floorDbfs).clamped(0, 1)
+        peak = max(blockPeak, peak - Self.peakFallPerBlock)
+        let now = Double(DispatchTime.now().uptimeNanoseconds) / 1e9
+        if now - lastLevelPublish >= 0.05 { lastLevelPublish = now; onLevel?(peak) }
 
         let byteCount = count * MemoryLayout<Int16>.size
         let pcm = Data(bytes: ch[0], count: byteCount)

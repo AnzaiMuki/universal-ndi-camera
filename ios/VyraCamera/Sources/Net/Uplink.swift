@@ -19,4 +19,13 @@ protocol Uplink: AnyObject {
     func sendStats(_ stats: DeviceStats)
     func sendControl(_ cmd: CameraCommand)
     func close()
+
+    /// Débit réellement écoulé (bits/s) et images intermédiaires sacrifiées en cas de saturation.
+    var throughputBps: Int { get }
+    var framesDropped: Int { get }
+}
+
+extension Uplink {
+    var throughputBps: Int { 0 }
+    var framesDropped: Int { 0 }
 }

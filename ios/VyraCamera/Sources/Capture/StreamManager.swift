@@ -1,67 +1,108 @@
 import Foundation
 import AVFoundation
+import Combine
 import Network
 import UIKit
 
-// Orchestrateur : relie capture caméra, encodeur H.264, audio et client réseau UNDI, et gère le
-// CANAL RETOUR (tally, consignes CUE, commandes CONTROL) — parité avec l'app Android.
-// Enchaînement du direct : connexion TCP → HELLO → STREAM_CONFIG → SPS/PPS → VIDEO (+ AUDIO + STATS).
+/// Statut du dernier message envoyé à la régie (« envoyé » puis « Vu par la régie »).
+struct ReplyStatus: Equatable {
+    var text: String
+    var seen = false
+}
+
+// Orchestrateur, pendant du StreamViewModel + CaptureController Android : relie capture caméra,
+// encodeur H.264, audio et client réseau UNDI, porte l'état affiché par l'écran et gère le CANAL
+// RETOUR (tally, consignes CUE, commandes CONTROL).
+// Enchaînement du direct : connexion → HELLO → STREAM_CONFIG → SPS/PPS → VIDEO (+ AUDIO + STATS).
 @MainActor
 final class StreamManager: ObservableObject {
     enum State: Equatable { case idle, connecting, streaming, failed(String) }
-    enum Transport { case tcp, srt }   // NDI/TCP (défaut) ou SRT (diffusion à distance)
-    enum Link: String { case wifi, usb }   // réseau (défaut) ou câble USB (toujours en TCP)
+    enum Transport: String { case tcp, srt }   // Wi-Fi : TCP (défaut, fluide) ou SRT (anti-perte)
+    enum Link: String { case wifi, usb }       // réseau (défaut) ou câble USB (toujours en TCP)
 
     // Drapeau de pause lu sur la file de capture (hors thread principal) : type référence partagé.
     private final class Flags { var paused = false }
 
     @Published private(set) var state: State = .idle
     @Published private(set) var status: String = "Prêt"
+    @Published private(set) var previewReady = false
     @Published var deviceName: String = UIDevice.current.name
-    @Published var micEnabled = true
-    @Published var transport: Transport = .tcp
-    /// Mode de connexion choisi, mémorisé entre les sessions (comme l'Android).
+
+    // Connexion, mémorisée entre les sessions (comme ConnectionPrefs côté Android).
     @Published var link: Link = Link(rawValue: UserDefaults.standard.string(forKey: "vyra_link") ?? "") ?? .wifi {
         didSet { UserDefaults.standard.set(link.rawValue, forKey: "vyra_link") }
     }
-    private static let usbPort: UInt16 = 6789     // port écouté par l'iPhone ; VYRA Studio s'y raccorde
-    private static let usbWait: TimeInterval = 30 // attente du pont par câble avant d'abandonner
+    @Published var transport: Transport = Transport(rawValue: UserDefaults.standard.string(forKey: "vyra_wifi_transport") ?? "") ?? .tcp {
+        didSet { UserDefaults.standard.set(transport.rawValue, forKey: "vyra_wifi_transport") }
+    }
+    /// Pont trouvé sur le Wi-Fi (Bonjour) ou relié par câble.
+    @Published private(set) var bridgeName: String?
+    private var discovered: Discovery.Found?
 
-    // Canal retour, pour le HUD.
+    // Canal retour.
     @Published private(set) var tally: TallyState = .off
     @Published private(set) var cue: Cue?
-    @Published private(set) var replyStatus: String?
-    @Published private(set) var replySeen = false
-    // Télémétrie affichée.
+    @Published private(set) var replyStatus: ReplyStatus?
+    @Published private(set) var paused = false
+
+    // Télémétrie.
     @Published private(set) var battery = -1
     @Published private(set) var charging = false
     @Published private(set) var thermal: ThermalLevel = .unknown
+    @Published private(set) var throughputBps = 0
 
-    // Paramètres de flux (modifiables à distance : débit, résolution).
-    private var streamWidth = 1280, streamHeight = 720
-    private let fps = 30
-    private var currentBitrate = 4_000_000
-    private var adaptiveBitrate = true
+    // Caméra.
+    @Published private(set) var controls = CameraControls()
+    @Published private(set) var caps = CameraCapabilities()
+    @Published private(set) var analysis = ExposureAnalysis.empty
+    @Published private(set) var fps = 30
+    @Published private(set) var format = VideoFormat.p720
+    @Published private(set) var adaptiveBitrate = true
+
+    // Audio.
+    @Published private(set) var micEnabled = UserDefaults.standard.object(forKey: "vyra_mic") == nil ? true : UserDefaults.standard.bool(forKey: "vyra_mic")
+    @Published private(set) var audioLevel: Float = 0
+    @Published private(set) var audioFailure: String?
+
+    private var currentBitrate = VideoFormat.p720.bitrateBps
+    private var manualBitrate: Int?
     private var audioMuted = false
     private var micGainDb = 0
 
     let capture = CameraCapture()
+    let discovery = Discovery()
     private var encoder: H264Encoder?
     private var client: Uplink = UndiClient()
     private let audio = AudioCapture()
     private let flags = Flags()
+    private var subscriptions = Set<AnyCancellable>()
 
     private var previewStarted = false
     private var lastConnect: ((@escaping (Bool) -> Void) -> Void)?
     private var statsTimer: Timer?
+    private var adaptTimer: Timer?
+    private var lastDropped = 0
     private var cueToken = 0
     private var replyToken = 0
     private var reconnecting = false
     private var reconnectDeadline: Date?
     private let maxReconnect: TimeInterval = 90   // reprise bornée (comme Android) puis abandon
+    private static let port: UInt16 = 6789
+    private static let usbWait: TimeInterval = 30 // attente du pont par câble avant d'abandonner
 
     init() {
         wireCallbacks()
+        discovery.$services
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] found in
+                guard let self else { return }
+                self.discovered = found.first
+                if !self.isLive { self.bridgeName = self.link == .wifi ? found.first?.name : nil }
+            }
+            .store(in: &subscriptions)
+        capture.onAnalysis = { [weak self] a in Task { @MainActor in self?.analysis = a } }
+        audio.onLevel = { [weak self] l in Task { @MainActor in self?.audioLevel = l } }
+        audio.onFailure = { [weak self] f in Task { @MainActor in self?.audioFailure = f } }
     }
 
     /// (Re)câble les callbacks sur le transport courant — à rappeler après un changement de transport.
@@ -74,59 +115,84 @@ final class StreamManager: ObservableObject {
         client.onDisconnected = { [weak self] in Task { @MainActor in self?.handleDisconnect() } }
     }
 
-    /// Choisit le transport (TCP/NDI ou SRT) et recâble les callbacks.
-    private func selectTransport() {
+    private func selectTransport(srt: Bool) {
         #if SRT_ENABLED
-        if transport == .srt { client = SrtClient(); wireCallbacks(); return }
+        if srt { client = SrtClient(); wireCallbacks(); return }
         #endif
         client = UndiClient(); wireCallbacks()
     }
 
     var isStreaming: Bool { if case .streaming = state { return true }; return false }
+    var isLive: Bool { isStreaming || state == .connecting }
 
     // MARK: - Aperçu caméra (avant le direct)
 
     func startPreview() {
         guard !previewStarted else { return }
+        UIApplication.shared.isIdleTimerDisabled = true   // un viseur ne s'éteint pas
+        discovery.start()
         CameraCapture.requestAccess { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
                 guard granted else { self.status = "Accès caméra refusé"; return }
                 self.previewStarted = true
-                self.capture.configure(height: self.streamHeight)
+                self.capture.configure(width: self.format.width, height: self.format.height, fps: self.fps)
+                self.refreshCaps()
+                self.capture.apply(self.controls, old: nil, caps: self.caps)
                 self.capture.start()
+                self.previewReady = true
+                self.startTelemetry()
             }
         }
     }
 
-    // MARK: - Démarrage
+    private func refreshCaps() {
+        caps = capture.capabilities(height: format.height)
+        if !caps.constantFps.contains(fps), let near = caps.constantFps.min(by: { abs($0 - 30) < abs($1 - 30) }) {
+            fps = near
+        }
+    }
+
+    // MARK: - Bouton rouge (SEUL déclencheur du passage à l'antenne)
+
+    /// Sans pont découvert en Wi-Fi, l'appui ne fait rien : l'écran affiche déjà « RECHERCHE DU PONT… ».
+    func toggleLive() {
+        if isLive { stop(); return }
+        if link == .usb { startUsb() }
+        else if let found = discovered { startDiscovered(found) }
+    }
+
+    /// Connexion manuelle par IP (secours).
+    func goLiveManual(_ host: String) {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, !isLive else { return }
+        startManual(host: h, port: Self.port)
+    }
 
     func startManual(host: String, port: UInt16) {
-        selectTransport()
-        beginConnect { completion in self.client.connect(host: host, port: port, completion: completion) }
+        selectTransport(srt: transport == .srt)
+        beginConnect(label: host) { completion in self.client.connect(host: host, port: port, completion: completion) }
     }
 
     func startDiscovered(_ found: Discovery.Found) {
-        // La découverte Bonjour est propre au TCP/NDI.
-        transport = .tcp
-        selectTransport()
+        // La découverte Bonjour vise le TCP du pont ; SRT passe par l'adresse saisie.
+        selectTransport(srt: false)
         guard let tcp = client as? UndiClient else { return }
-        beginConnect { completion in tcp.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
+        beginConnect(label: found.name) { completion in tcp.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
     }
 
     /// Câble USB : l'iPhone attend que VYRA Studio le rejoigne par le câble (voir UndiClient.accept).
     func startUsb() {
-        transport = .tcp   // SRT/UDP ne traverse pas le tunnel USB
-        selectTransport()
+        selectTransport(srt: false)   // SRT/UDP ne traverse pas le tunnel USB
         guard let tcp = client as? UndiClient else { return }
-        beginConnect(failure: "VYRA Studio introuvable par câble") { completion in
-            tcp.accept(port: Self.usbPort, timeout: Self.usbWait, completion: completion)
+        beginConnect(label: "USB (câble)", failure: "VYRA Studio introuvable par câble") { completion in
+            tcp.accept(port: Self.port, timeout: Self.usbWait, completion: completion)
         }
     }
 
-    private func beginConnect(failure: String = "Connexion impossible",
+    private func beginConnect(label: String, failure: String = "Connexion impossible",
                               _ connect: @escaping (@escaping (Bool) -> Void) -> Void) {
-        if state == .connecting || isStreaming { return }   // un échec précédent n'empêche pas de réessayer
+        if isLive { return }   // un échec précédent n'empêche pas de réessayer
         lastConnect = connect
         state = .connecting
         status = "Connexion…"
@@ -135,7 +201,10 @@ final class StreamManager: ObservableObject {
                 guard let self else { return }
                 guard granted else { self.fail("Accès caméra refusé"); return }
                 connect { ok in
-                    Task { @MainActor in ok ? self.onConnected() : self.fail(failure) }
+                    Task { @MainActor in
+                        guard self.state == .connecting else { return }   // annulé entre-temps
+                        if ok { self.bridgeName = label; self.onConnected() } else { self.fail(failure) }
+                    }
                 }
             }
         }
@@ -144,12 +213,14 @@ final class StreamManager: ObservableObject {
     private func onConnected() {
         let client = self.client
         flags.paused = false
+        paused = false
         client.sendHello(name: deviceName)
-        client.sendStreamConfig(StreamConfig(codec: .h264, width: streamWidth, height: streamHeight, fps: fps, bitrateBps: currentBitrate))
+        client.sendStreamConfig(StreamConfig(codec: .h264, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
 
-        let enc = H264Encoder(width: streamWidth, height: streamHeight, fps: fps)
+        let enc = H264Encoder(width: format.width, height: format.height, fps: fps)
         enc.onConfig = { cfg in client.sendVideo(cfg, ptsUs: 0, keyframe: false, config: true) }
         enc.onFrame = { data, pts, key in client.sendVideo(data, ptsUs: pts, keyframe: key, config: false) }
+        currentBitrate = format.bitrateBps
         enc.start(bitrateBps: currentBitrate)
         encoder = enc
 
@@ -165,17 +236,147 @@ final class StreamManager: ObservableObject {
 
         if micEnabled && !audioMuted { startAudio() }
 
-        startTelemetry()
+        reportStats()
+        startAdaptiveBitrate()
         state = .streaming
         status = "En direct"
         echo()   // état initial vers le pont
+    }
+
+    // MARK: - Micro
+
+    /// Le micro est demandé AU MOMENT DE L'USAGE ; son refus n'empêche pas la vidéo.
+    func setMicEnabled(_ on: Bool) {
+        guard on else { applyMic(false); return }
+        AudioCapture.requestAccess { [weak self] ok in
+            Task { @MainActor in
+                guard let self else { return }
+                if ok { self.applyMic(true) } else { self.audioFailure = "Micro non autorisé" }
+            }
+        }
+    }
+
+    private func applyMic(_ on: Bool) {
+        micEnabled = on
+        UserDefaults.standard.set(on, forKey: "vyra_mic")
+        audioFailure = nil
+        if on, isStreaming, !audioMuted { startAudio() } else if !on { audio.stop() }
+        if isStreaming { echo() }
     }
 
     private func startAudio() {
         let client = self.client
         audio.setGainDb(micGainDb)
         audio.onPCM = { pcm, sr, ch, pts in client.sendAudio(pcm, sampleRate: sr, channels: ch, ptsUs: pts) }
-        audio.start()
+        AudioCapture.requestAccess { [weak self] ok in
+            Task { @MainActor in
+                guard let self else { return }
+                if ok { self.audio.start() } else { self.audioFailure = "Micro non autorisé" }
+            }
+        }
+    }
+
+    // MARK: - Réglages caméra (écran ET régie passent par ici)
+
+    func setControls(_ c: CameraControls) {
+        let old = controls
+        controls = c
+        capture.apply(c, old: old, caps: caps)
+        if isStreaming { echo() }
+    }
+
+    /// Pincement : valeur immédiate, le doigt prime sur une transition en cours.
+    func setZoom(_ z: Float) {
+        controls.zoom = min(max(z, 1), caps.maxZoom)
+        capture.setZoom(controls.zoom)
+        if isStreaming { echo() }
+    }
+
+    /// Palier de zoom : transition progressive (un saut de focale est violent à l'antenne).
+    func zoomTo(_ z: Float) {
+        controls.zoom = min(max(z, 1), caps.maxZoom)
+        capture.zoomTo(controls.zoom)
+        if isStreaming { echo() }
+    }
+
+    /// Appui sur l'image : point + mesure sur ce point. En point manuel, l'appui repasse en auto.
+    func focusAt(_ devicePoint: CGPoint) {
+        if !controls.autoFocus { setControls(with(controls) { $0.autoFocus = true }) }
+        capture.focusAndMeter(at: devicePoint)
+    }
+
+    func clearTapFocus() { capture.clearTapFocus() }
+
+    /// Outils d'exposition : un seul flux d'analyse, actif seulement si un outil est affiché.
+    func setExposureTools(histogram: Bool, zebraPercent: Int?, peaking: Bool) {
+        let on = histogram || zebraPercent != nil || peaking
+        capture.setAnalysis(enabled: on, zebraLuma: zebraPercent.map(ExposureAnalysis.thresholdToLuma), peaking: peaking)
+        if !on { analysis = .empty }
+    }
+
+    /// Cadence de capture (hors direct : elle est annoncée au pont à la connexion).
+    func setFps(_ f: Int) {
+        guard !isLive else { return }
+        fps = f
+        capture.setFormat(width: format.width, height: format.height, fps: f)
+        refreshCaps()
+    }
+
+    /// Résolutions que cet appareil sait produire à la cadence courante.
+    func supportedFormats() -> [VideoFormat] { capture.supportedFormats(fps: fps) }
+
+    /// Résolution du flux (hors direct) ; le débit s'ajuste au format choisi.
+    func setResolution(_ f: VideoFormat) {
+        guard !isLive else { return }
+        format = f
+        currentBitrate = f.bitrateBps
+        capture.setFormat(width: f.width, height: f.height, fps: fps)
+        refreshCaps()
+    }
+
+    func setAdaptiveBitrate(_ on: Bool) {
+        adaptiveBitrate = on
+        if isStreaming { echo() }
+    }
+
+    // MARK: - Débit adaptatif (recul franc, remontée lente, plafond thermique), comme Android
+
+    private func startAdaptiveBitrate() {
+        adaptTimer?.invalidate()
+        lastDropped = client.framesDropped
+        adaptTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.adaptStep() }
+        }
+    }
+
+    private func adaptStep() {
+        guard isStreaming, let encoder else { return }
+        throughputBps = client.throughputBps
+        let nominal = format.bitrateBps
+        let dropped = client.framesDropped
+        let delta = dropped - lastDropped
+        lastDropped = dropped
+        guard adaptiveBitrate else {
+            let target = manualBitrate ?? nominal
+            if currentBitrate != target { currentBitrate = target; encoder.setBitrate(target) }
+            return
+        }
+        var next = currentBitrate
+        if delta > 2 { next = Int(Double(next) * 0.72) }   // recul FRANC : on désengorge vite
+        else if delta == 0 { next += nominal / 10 }         // réseau sain : on remonte doucement
+        let minBps = max(nominal / 4, 500_000)
+        let thermalCap = Int(Double(nominal) * thermalFactor(thermal))
+        next = min(max(next, minBps), max(thermalCap, minBps))
+        if next != currentBitrate { currentBitrate = next; encoder.setBitrate(next) }
+    }
+
+    private func thermalFactor(_ t: ThermalLevel) -> Double {
+        switch t {
+        case .warm: return 0.85
+        case .hot: return 0.6
+        case .critical: return 0.4
+        default: return 1
+        }
     }
 
     // MARK: - Télémétrie (batterie / thermique), toutes les 5 s
@@ -201,7 +402,7 @@ final class StreamManager: ObservableObject {
         case .critical: thermal = .critical
         @unknown default: thermal = .unknown
         }
-        client.sendStats(DeviceStats(batteryPercent: battery, charging: charging, thermal: thermal))
+        if isStreaming { client.sendStats(DeviceStats(batteryPercent: battery, charging: charging, thermal: thermal)) }
     }
 
     // MARK: - Canal retour : CUE / REPLY
@@ -211,19 +412,18 @@ final class StreamManager: ObservableObject {
         cue = c
         cueToken += 1
         let token = cueToken
-        let delay = c.urgent ? 8.0 : 6.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + (c.urgent ? 8.0 : 6.0)) { [weak self] in
             guard let self, self.cueToken == token else { return }
             self.cue = nil
         }
     }
 
+    /// Réponse du vidéaste vers la régie (réponse rapide, accusé de consigne, alerte, message libre).
     func sendReply(_ text: String, alert: Bool = false) {
         let t = text.trimmingCharacters(in: .whitespaces)
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty, isStreaming else { return }
         client.sendReply(Reply(text: t, alert: alert))
-        replyStatus = t
-        replySeen = false
+        replyStatus = ReplyStatus(text: t)
         replyToken += 1
         let token = replyToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
@@ -232,9 +432,17 @@ final class StreamManager: ObservableObject {
         }
     }
 
+    /// Accusé de la consigne affichée : ferme la boucle avec la régie (« ✓ <consigne> »).
+    func acknowledgeCue() {
+        guard let c = cue else { return }
+        sendReply("✓ " + c.text)
+        cue = nil
+    }
+
     private func markReplySeen() {
-        guard replyStatus != nil, !replySeen else { return }
-        replySeen = true
+        guard var r = replyStatus, !r.seen else { return }
+        r.seen = true
+        replyStatus = r
         replyToken += 1
         let token = replyToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -248,40 +456,47 @@ final class StreamManager: ObservableObject {
     private func apply(_ cmd: CameraCommand) {
         guard !cmd.isEmpty else { return }
 
-        cmd.zoom.map { capture.setZoom($0) }
-        cmd.torch.map { capture.setTorch($0) }
-        cmd.paused.map { setPaused($0) }
+        var c = controls
+        if let v = cmd.torch { c.torch = v }
+        if let v = cmd.autoExposure { c.autoExposure = v }
+        if let v = cmd.iso { c.iso = v }
+        if let v = cmd.exposureTimeNs { c.exposureTimeNs = v }
+        if let v = cmd.aeCompensation { c.aeCompensation = v }
+        if let v = cmd.wbManual { c.wbManual = v }
+        if let v = cmd.wbKelvin { c.wbKelvin = v }
+        if let v = cmd.autoFocus { c.autoFocus = v }
+        if let v = cmd.focusDistance { c.focusPosition = v; c.autoFocus = false }
+        let old = controls
+        controls = c
+        capture.apply(c, old: old, caps: caps)
+        if let z = cmd.zoom { zoomTo(z) }
 
+        cmd.paused.map { setPaused($0) }
         if let muted = cmd.audioMuted { setAudioMuted(muted) }
         if let gain = cmd.micGainDb { micGainDb = gain; audio.setGainDb(gain) }
-
         cmd.adaptiveBitrate.map { adaptiveBitrate = $0 }
         if let kbps = cmd.bitrateKbps {
-            currentBitrate = kbps * 1000
-            if !adaptiveBitrate { encoder?.setBitrate(currentBitrate) }
+            manualBitrate = kbps * 1000
+            if !adaptiveBitrate { currentBitrate = kbps * 1000; encoder?.setBitrate(currentBitrate) }
         }
-        if let h = cmd.resolutionHeight { streamHeight = h; streamWidth = widthForHeight(h) }
-
-        capture.applyExposure(auto: cmd.autoExposure, iso: cmd.iso, exposureNs: cmd.exposureTimeNs, bias: cmd.aeCompensation)
-        capture.applyFocus(auto: cmd.autoFocus, distance: cmd.focusDistance)
-        capture.applyWhiteBalance(manual: cmd.wbManual, kelvin: cmd.wbKelvin)
+        if let h = cmd.resolutionHeight, let f = VideoFormat.candidates.first(where: { $0.height == h }) {
+            format = f
+        }
 
         if cmd.restartStream == true { restart() } else { echo() }
     }
 
-    private func widthForHeight(_ h: Int) -> Int { h <= 720 ? 1280 : (h >= 2160 ? 3840 : 1920) }
-
     /// Coupe/relance l'envoi vidéo SANS fermer la connexion (le pont garde son canal de commande).
-    private func setPaused(_ paused: Bool) {
-        flags.paused = paused
-        if !paused { encoder?.requestKeyframe() }   // sans image clé, le pont ne redécode pas
+    private func setPaused(_ p: Bool) {
+        flags.paused = p
+        paused = p
+        if !p { encoder?.requestKeyframe() }   // sans image clé, le pont ne redécode pas
     }
 
     /// Coupe/rend le son : on LIBÈRE réellement le micro (indicateur système éteint), comme Android.
     private func setAudioMuted(_ muted: Bool) {
         audioMuted = muted
-        if muted { audio.stop() }
-        else if micEnabled && isStreaming { startAudio() }
+        if muted { audio.stop() } else if micEnabled && isStreaming { startAudio() }
     }
 
     // MARK: - Reconnexion bornée (reprise d'une micro-coupure, puis abandon)
@@ -298,7 +513,7 @@ final class StreamManager: ObservableObject {
         guard reconnecting, isStreaming, let connect = lastConnect else { return }
         if Date() > (reconnectDeadline ?? .distantPast) {
             reconnecting = false
-            fail("Direct abandonné (réseau indisponible \(Int(maxReconnect)) s)")
+            fail("Connexion perdue — direct arrêté (le réseau est resté coupé trop longtemps)")
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
@@ -306,8 +521,7 @@ final class StreamManager: ObservableObject {
             connect { ok in
                 Task { @MainActor in
                     guard self.reconnecting else { return }
-                    if ok { self.onReconnected() }
-                    else { self.attemptReconnect(backoff: min(backoff * 2, 5)) }
+                    if ok { self.onReconnected() } else { self.attemptReconnect(backoff: min(backoff * 2, 5)) }
                 }
             }
         }
@@ -318,7 +532,7 @@ final class StreamManager: ObservableObject {
         reconnecting = false
         status = "En direct"
         client.sendHello(name: deviceName)
-        client.sendStreamConfig(StreamConfig(codec: .h264, width: streamWidth, height: streamHeight, fps: fps, bitrateBps: currentBitrate))
+        client.sendStreamConfig(StreamConfig(codec: .h264, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
         encoder?.resendConfig()
         encoder?.requestKeyframe()
         if micEnabled && !audioMuted { startAudio() }
@@ -328,10 +542,11 @@ final class StreamManager: ObservableObject {
 
     /// Reconnecte le lien pour appliquer une nouvelle résolution en direct (comme Android).
     private func restart() {
-        guard let connect = lastConnect else { echo(); return }
+        guard let connect = lastConnect, let label = bridgeName else { echo(); return }
         stop()
-        capture.setResolution(height: streamHeight)
-        beginConnect(connect)
+        capture.setFormat(width: format.width, height: format.height, fps: fps)
+        refreshCaps()
+        beginConnect(label: label, connect)
     }
 
     private func echo() {
@@ -339,35 +554,27 @@ final class StreamManager: ObservableObject {
             autoExposure: capture.isExposureAuto,
             iso: capture.currentISO,
             exposureTimeNs: capture.currentExposureNs,
-            aeCompensation: nil,
+            aeCompensation: controls.aeCompensation,
             awbMode: nil,
             wbManual: capture.isWhiteBalanceManual,
-            wbKelvin: nil,
+            wbKelvin: controls.wbManual ? controls.wbKelvin : nil,
             autoFocus: capture.isFocusAuto,
             focusDistance: nil,
-            zoom: capture.currentZoom,
+            zoom: controls.zoom,
             paused: flags.paused,
             torch: capture.torchOn,
-            audioMuted: audioMuted,
+            audioMuted: audioMuted || !micEnabled,
             micGainDb: micGainDb,
             adaptiveBitrate: adaptiveBitrate,
             bitrateKbps: currentBitrate / 1000,
-            resolutionHeight: streamHeight,
+            resolutionHeight: format.height,
             restartStream: nil))
     }
 
     // MARK: - Arrêt / erreur
 
     func stop() {
-        reconnecting = false
-        statsTimer?.invalidate(); statsTimer = nil
-        capture.onSample = nil
-        audio.stop()
-        encoder?.stop()
-        encoder = nil
-        client.close()
-        tally = .off
-        cue = nil
+        endLive()
         state = .idle
         status = "Prêt"
     }
@@ -375,17 +582,45 @@ final class StreamManager: ObservableObject {
     func teardown() {
         stop()
         capture.stop()
+        statsTimer?.invalidate(); statsTimer = nil
+        discovery.stop()
         previewStarted = false
+        previewReady = false
     }
 
     private func fail(_ message: String) {
+        endLive()
+        state = .failed(message)
+        status = message
+    }
+
+    private func endLive() {
         reconnecting = false
-        statsTimer?.invalidate(); statsTimer = nil
+        adaptTimer?.invalidate(); adaptTimer = nil
         capture.onSample = nil
         audio.stop()
         encoder?.stop(); encoder = nil
         client.close()
-        state = .failed(message)
-        status = message
+        // Plus de lien = plus d'antenne. Laisser un voyant rouge allumé serait dangereux.
+        tally = .off
+        cue = nil
+        paused = false
+        flags.paused = false
+        throughputBps = 0
+        bridgeName = link == .wifi ? discovered?.name : nil
     }
+
+    /// Change le mode de connexion (hors direct).
+    func setLink(_ l: Link) {
+        guard !isLive else { return }
+        link = l
+        bridgeName = l == .wifi ? discovered?.name : nil
+    }
+}
+
+/// Copie modifiée d'une valeur (évite les `var c = …; c.x = …` en cascade).
+func with<T>(_ value: T, _ change: (inout T) -> Void) -> T {
+    var v = value
+    change(&v)
+    return v
 }

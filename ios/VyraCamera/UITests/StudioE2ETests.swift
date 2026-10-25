@@ -13,23 +13,46 @@ final class StudioE2ETests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft   // paysage, encoche à gauche (comme l'Android)
         app = XCUIApplication()
+        app.launchArguments = ["-vyra_mic", "NO"]          // pas de demande d'autorisation micro pendant le test
         app.launch()
     }
 
     func testUsbLiveSessionWithStudio() throws {
-        XCTAssertTrue(app.buttons["Passer en direct"].waitForExistence(timeout: 10))
-        shot("1-accueil")
+        // Lancement animé, puis conditions d'utilisation au premier lancement.
+        let accept = app.buttons["J'accepte"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 10), "CLUF absent")
+        shot("01-conditions")
+        accept.tap()
 
+        let live = app.buttons["live"]
+        XCTAssertTrue(live.waitForExistence(timeout: 10), "viseur absent")
+        sleep(1)
+        shot("02-viseur")
+
+        // Outils : exposition avec histogramme et zebras, puis repères avec niveau.
+        app.buttons["tool-exposure"].tap()
+        app.buttons["Histo."].tap()
+        app.buttons["95%"].tap()
+        sleep(1)
+        shot("03-outil-exposition")
+        app.buttons["tool-guides"].tap()
+        app.buttons["Niveau"].tap()
+        shot("04-outil-reperes")
+        app.buttons["Niveau"].tap()
+        app.buttons["tool-camera"].tap()
+
+        // Réglages ▸ Réseau : câble USB.
+        app.buttons["settings"].tap()
+        XCTAssertTrue(app.staticTexts["Réglages"].waitForExistence(timeout: 5))
         app.buttons["USB (câble)"].tap()
-        let mic = app.switches["Micro"]
-        if mic.exists, (mic.value as? String) == "1" {
-            // Micro coupé : pas de demande d'autorisation système pendant le test.
-            mic.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-        }
-        shot("2-mode-usb")
-        app.buttons["Passer en direct"].tap()
+        shot("05-reglages")
+        app.buttons["Terminé"].tap()
+        XCTAssertTrue(app.staticTexts["MODE CÂBLE USB"].waitForExistence(timeout: 5))
 
+        // Bouton rouge : l'iPhone attend VYRA Studio par le câble.
+        live.tap()
         let studio = try StudioMock.connect(port: 6789, timeout: 15)
         defer { studio.close() }
 
@@ -70,18 +93,18 @@ final class StudioE2ETests: XCTestCase {
         XCTAssertTrue(sawKey, "aucune image clé (\(frames) images, types NAL \(nalTypes.sorted()))")
         XCTAssertEqual(frames, 45, "flux interrompu : \(frames) images en 20 s")
         XCTAssertGreaterThanOrEqual(fps, 15, "cadence trop basse : \(fps) i/s")
-        XCTAssertTrue(app.buttons["Arrêter le direct"].exists)
-        shot("3-en-direct")
+        XCTAssertTrue(app.staticTexts["EN DIRECT · NDI"].waitForExistence(timeout: 5))
+        shot("06-en-direct")
 
         // Tally « à l'antenne ».
         studio.send(.tally, Data([UInt8(TallyState.bitProgram)]))
         XCTAssertTrue(app.staticTexts["À L'ANTENNE"].waitForExistence(timeout: 5))
-        shot("4-antenne")
+        shot("07-antenne")
 
         // Consigne urgente de la régie.
         studio.send(.cue, Data([1]) + Data("Plan large".utf8))
-        XCTAssertTrue(app.staticTexts["Plan large"].waitForExistence(timeout: 5))
-        shot("5-consigne")
+        XCTAssertTrue(app.staticTexts["PLAN LARGE"].waitForExistence(timeout: 5))
+        shot("08-consigne")
 
         // Pilotage : la caméra renvoie l'état réellement appliqué (écho CONTROL).
         var cmd = CameraCommand()
@@ -90,19 +113,23 @@ final class StudioE2ETests: XCTestCase {
         let echo = try studio.next(.control)
         XCTAssertNotNil(CameraCommand.decode(echo.payload).zoom, "écho CONTROL sans état de zoom")
 
-        // Réponse rapide du vidéaste, puis accusé « vu » de la régie.
-        app.buttons["Compris"].tap()
+        // Messagerie : réponse rapide du vidéaste, puis accusé « vu » de la régie.
+        app.buttons["messages"].tap()
+        let compris = app.buttons["Compris ✓"]
+        XCTAssertTrue(compris.waitForExistence(timeout: 5))
+        shot("09-messagerie")
+        compris.tap()
         let reply = try studio.next(.reply)
         XCTAssertEqual(reply.payload.first, 0)
-        XCTAssertEqual(String(decoding: reply.payload.dropFirst(), as: UTF8.self), "Compris")
+        XCTAssertEqual(String(decoding: reply.payload.dropFirst(), as: UTF8.self), "Compris ✓")
         studio.send(.seen, Data())
-        XCTAssertTrue(app.staticTexts["Vu par la régie"].waitForExistence(timeout: 5))
-        shot("6-vu-par-la-regie")
+        XCTAssertTrue(app.staticTexts["Vu par la régie ✓✓"].waitForExistence(timeout: 5))
+        shot("10-vu-par-la-regie")
 
         XCTAssertTrue(studio.received(.stats), "télémétrie batterie/thermique jamais reçue")
 
-        app.buttons["Arrêter le direct"].tap()
-        XCTAssertTrue(app.buttons["Passer en direct"].waitForExistence(timeout: 5))
+        live.tap()
+        XCTAssertTrue(app.staticTexts["MODE CÂBLE USB"].waitForExistence(timeout: 5))
     }
 
     // MARK: - Pièces jointes

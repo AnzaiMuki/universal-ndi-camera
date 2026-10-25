@@ -17,18 +17,18 @@ final class ExternalDisplayTests: XCTestCase {
 
         ext.attach(layer)
         XCTAssertTrue(ext.connected)
-        XCTAssertTrue(capture.hasExternalSink)
+        XCTAssertTrue(capture.hasSink(ExternalDisplay.sinkKey))
 
         let sample = try XCTUnwrap(SimulatorCamera.frame(index: 0))
         capture.deliver(sample)
         XCTAssertNotEqual(layer.status, .failed)
 
         ext.clean = false   // « Copie d'écran » : plus rien n'est envoyé à l'écran externe
-        XCTAssertFalse(capture.hasExternalSink)
+        XCTAssertFalse(capture.hasSink(ExternalDisplay.sinkKey))
 
         ext.clean = true
         ext.attach(nil)     // écran débranché
         XCTAssertFalse(ext.connected)
-        XCTAssertFalse(capture.hasExternalSink)
+        XCTAssertFalse(capture.hasSink(ExternalDisplay.sinkKey))
     }
 }

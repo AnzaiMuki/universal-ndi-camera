@@ -6,6 +6,16 @@ import Network
 final class UndiClient: Uplink {
     private var conn: NWConnection?
     private var listener: NWListener?   // mode câble USB : attente du pont (voir accept)
+
+    // Santé du lien. Politique d'abandon (comme TcpSink côté Android) : SPS/PPS et images clés ne sont
+    // jamais lâchés ; une image intermédiaire l'est si la file d'envoi déborde, et elle est comptée.
+    private let statsLock = NSLock()
+    private var pendingFrames = 0
+    private var dropped = 0
+    private var windowBytes = 0
+    private var windowStart = DispatchTime.now().uptimeNanoseconds
+    private var lastThroughput = 0
+    private static let maxPendingFrames = 30
     private let queue = DispatchQueue(label: "com.ndicam.undi.client")
     private var sequence: UInt32 = 0
     private(set) var connected = false
@@ -97,6 +107,7 @@ final class UndiClient: Uplink {
             case .ready:
                 self.connected = true
                 self.didConnect = true
+                self.statsLock.lock(); self.pendingFrames = 0; self.statsLock.unlock()
                 self.onStatus?("Connecté à \(label)")
                 self.rxBuffer.removeAll(keepingCapacity: true)
                 self.startReceive()
@@ -118,13 +129,42 @@ final class UndiClient: Uplink {
         c.start(queue: queue)
     }
 
-    private func writeFrame(type: FrameType, flags: UInt16, ptsUs: Int64, payload: Data) {
+    var framesDropped: Int { statsLock.lock(); defer { statsLock.unlock() }; return dropped }
+
+    var throughputBps: Int {
+        statsLock.lock(); defer { statsLock.unlock() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now - windowStart
+        if elapsed >= 1_000_000_000 {
+            lastThroughput = Int(UInt64(windowBytes) * 8 * 1_000_000_000 / elapsed)
+            windowBytes = 0
+            windowStart = now
+        }
+        return lastThroughput
+    }
+
+    private func writeFrame(type: FrameType, flags: UInt16, ptsUs: Int64, payload: Data, droppable: Bool = false) {
         guard connected, let conn else { return }
+        statsLock.lock()
+        if droppable && pendingFrames >= Self.maxPendingFrames {
+            dropped += 1
+            statsLock.unlock()
+            return
+        }
+        pendingFrames += 1
         let header = UndiProtocol.header(type: type, flags: flags, length: payload.count, ptsUs: ptsUs, sequence: sequence)
         sequence &+= 1
+        statsLock.unlock()
         var frame = header
         frame.append(payload)
-        conn.send(content: frame, completion: .contentProcessed { _ in })
+        let size = frame.count
+        conn.send(content: frame, completion: .contentProcessed { [weak self] _ in
+            guard let self else { return }
+            self.statsLock.lock()
+            self.pendingFrames -= 1
+            self.windowBytes += size
+            self.statsLock.unlock()
+        })
     }
 
     func sendHello(name: String) {
@@ -140,7 +180,7 @@ final class UndiClient: Uplink {
         var flags: UInt16 = 0
         if keyframe { flags |= UndiProtocol.flagKeyframe }
         if config { flags |= UndiProtocol.flagConfig }
-        writeFrame(type: .video, flags: flags, ptsUs: ptsUs, payload: annexB)
+        writeFrame(type: .video, flags: flags, ptsUs: ptsUs, payload: annexB, droppable: !keyframe && !config)
     }
 
     /// Envoie un bloc audio PCM. Charge utile : sampleRate(u32 LE) | channels(u16 LE) | PCM int16 LE

@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: "0.6.0"
+    MARKETING_VERSION: "0.7.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     TARGETED_DEVICE_FAMILY: "1,2"
@@ -40,10 +40,16 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         NSBonjourServices:
           - _undicam._tcp
+        # Paysage seul, comme l'Android (screenOrientation=landscape) : le capteur est fixé en
+        # landscapeRight, l'autre sens donnerait une image à l'envers.
         UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        NSMotionUsageDescription: "VYRA Camera utilise l'inclinaison du téléphone pour le niveau électronique."
 
   # Cible de tests : vérifie les formats filaires UNDI (A→Z, sans appareil ni caméra).
   VyraCameraTests:

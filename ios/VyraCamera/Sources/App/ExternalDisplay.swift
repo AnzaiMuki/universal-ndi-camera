@@ -14,6 +14,7 @@ import Combine
 final class ExternalDisplay: ObservableObject {
     static let shared = ExternalDisplay()
     private static let cleanKey = "vyra_hdmi.clean"
+    static let sinkKey = "hdmi"
 
     /// Un écran externe (HDMI) est branché.
     @Published private(set) var connected = false
@@ -39,8 +40,8 @@ final class ExternalDisplay: ObservableObject {
     /// Branche les images caméra sur l'écran externe seulement quand il est affiché.
     private func route() {
         guard let capture else { return }
-        guard clean, let layer else { capture.setExternalSink(nil); return }
-        capture.setExternalSink { [weak layer] sample in
+        guard clean, let layer else { capture.setSink(Self.sinkKey, nil); return }
+        capture.setSink(Self.sinkKey) { [weak layer] sample in
             guard let layer else { return }
             if layer.status == .failed { layer.flush() }
             Self.markDisplayImmediately(sample)
@@ -49,7 +50,7 @@ final class ExternalDisplay: ObservableObject {
     }
 
     /// Affichage à réception, sans horloge de présentation : latence minimale.
-    nonisolated private static func markDisplayImmediately(_ sample: CMSampleBuffer) {
+    nonisolated static func markDisplayImmediately(_ sample: CMSampleBuffer) {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
               CFArrayGetCount(attachments) > 0 else { return }
         let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
@@ -129,11 +130,11 @@ struct HdmiBanner: View {
     @State private var expanded = true
     @State private var token = 0
 
-    private let ink = Color(red: 0.918, green: 0.941, blue: 0.925)    // #EAF0EC
-    private let sage = Color(red: 0.616, green: 0.690, blue: 0.651)   // #9DB0A6
-    private let green = Color(red: 0.133, green: 0.773, blue: 0.369)  // #22C55E
-    private let accent = Color(red: 0.086, green: 0.639, blue: 0.290) // #16A34A
-    private let bg = Color(red: 0.055, green: 0.075, blue: 0.094).opacity(0.92)
+    // Mêmes valeurs que le bandeau Android (HdmiOutput.kt).
+    private let sage = Color(argb: 0xFF9AA5B1)
+    private let green = Vyra.ready
+    private let accent = Vyra.accent
+    private let bg = Color(argb: 0xEB0E1318)
 
     var body: some View {
         Group {
@@ -151,7 +152,7 @@ struct HdmiBanner: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(bg, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.14)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(argb: 0x24FFFFFF)))
         }
     }
 
@@ -166,12 +167,12 @@ struct HdmiBanner: View {
                 option(false, "Copie d'écran")
             }
             .padding(2)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color(argb: 0x0FFFFFFF), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(10)
         .frame(width: 260)
         .background(bg, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(argb: 0x24FFFFFF)))
     }
 
     private func option(_ value: Bool, _ label: String) -> some View {
