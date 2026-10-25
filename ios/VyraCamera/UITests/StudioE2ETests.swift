@@ -144,11 +144,17 @@ final class StudioE2ETests: XCTestCase {
 
     // MARK: - Mise en page
 
-    /// Deux éléments affichés ne doivent jamais se recouvrir (ergonomie : aucune pastille dans l'autre).
+    /// Deux éléments affichés ne doivent jamais se recouvrir (ergonomie : aucune pastille dans l'autre),
+    /// ni déborder de l'écran (petits écrans type iPhone SE).
     private func assertApart(_ a: XCUIElement, _ b: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         guard a.exists, b.exists else { return }
         XCTAssertFalse(a.frame.intersects(b.frame),
                        "chevauchement : « \(a.label) » \(a.frame) / « \(b.label) » \(b.frame)", file: file, line: line)
+        let screen = app.windows.firstMatch.frame
+        for e in [a, b] {
+            XCTAssertTrue(screen.contains(e.frame),
+                          "hors écran : « \(e.label) » \(e.frame) dans \(screen)", file: file, line: line)
+        }
     }
 
     // MARK: - Pièces jointes
