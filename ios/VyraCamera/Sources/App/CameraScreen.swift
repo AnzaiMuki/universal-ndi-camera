@@ -97,84 +97,103 @@ struct CameraScreen: View {
     }
 
     // MARK: - HUD
+    //
+    // Mise en page en RANGÉES qui s'empilent (jamais de position absolue) : aucun élément ne peut en
+    // recouvrir un autre. Une seule marge sur les quatre côtés ; la bande du rail est réservée à droite.
+
+    private static let margin: CGFloat = 16
+    private static let sideSlot: CGFloat = 164   // colonnes latérales du bas : histogramme | vumètre
 
     private var hud: some View {
-        ZStack {
-            ExposureReadouts(c: m.controls, fps: m.fps)
-                .padding(.top, 12).padding(.leading, 14)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            TimecodeStatus(state: m.state, previewReady: m.previewReady, paused: m.paused,
-                           bridgeName: m.bridgeName, usb: m.link == .usb, liveSince: m.liveSince)
-                .padding(.top, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-            if hdmi.connected {
-                HdmiBanner(display: hdmi).padding(.top, 48)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 8) {
+                topBlock
+                Spacer(minLength: 8)
+                bottomBlock
             }
-
-            TopRightCluster(thermal: m.thermal, battery: m.battery, charging: m.charging, resolutionLabel: "\(m.format.height)p")
-                .padding(.top, 12).padding(.trailing, 12 + Vyra.railWidth)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(.horizontal, Self.margin)
+            .padding(.vertical, 12)
+            .padding(.trailing, Vyra.railWidth - 8)   // le rail porte déjà sa marge de 8
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Toolbar(live: m.isLive, selected: tool,
                     onSelect: { t in withAnimation(.easeOut(duration: 0.2)) { tool = tool == t ? nil : t } },
                     onCamera: { withAnimation(.easeOut(duration: 0.2)) { tool = nil } },
                     onLive: { m.toggleLive() },
                     onSettings: { tool = nil; showSettings = true })
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+    }
 
-            if histogramOn && tool == nil {
-                HistogramOverlay(histogram: m.analysis.histogram)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+    /// Haut : lectures | timecode | format + batterie, puis bandeau HDMI (gauche) et consigne (centre).
+    private var topBlock: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 0) {
+                ExposureReadouts(c: m.controls, fps: m.fps).fixedSize()
+                Spacer(minLength: 12)
+                TimecodeStatus(state: m.state, previewReady: m.previewReady, paused: m.paused,
+                               bridgeName: m.bridgeName, usb: m.link == .usb, liveSince: m.liveSince)
+                    .fixedSize()
+                Spacer(minLength: 12)
+                TopRightCluster(thermal: m.thermal, battery: m.battery, charging: m.charging,
+                                resolutionLabel: "\(m.format.height)p").fixedSize()
             }
-
-            if tool == nil && m.isLive {
-                AudioMeter(level: m.audioLevel, failure: m.audioFailure, micEnabled: m.micEnabled) { m.setMicEnabled(!m.micEnabled) }
-                    .padding(.bottom, 12).padding(.trailing, 12 + Vyra.railWidth)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            }
-
-            if tool == nil {
-                if let rs = m.replyStatus {
-                    ReplyStatusPill(status: rs).padding(.bottom, 170)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if hdmi.connected || m.cue != nil {
+                HStack(alignment: .top, spacing: 12) {
+                    if hdmi.connected { HdmiBanner(display: hdmi) }
+                    // Consigne de la régie : sous le timecode, jamais dessus. S'efface seule.
+                    if let cue = m.cue {
+                        CueBanner(cue: cue) { m.acknowledgeCue() }.frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
                 }
+            }
+        }
+    }
+
+    /// Bas : volet d'outils, OU [accusé] [messagerie] puis histogramme | zoom + Messages | vumètre.
+    @ViewBuilder private var bottomBlock: some View {
+        if let tool {
+            ControlPanel(tool: tool, guideMask: $guideMask, level: level, levelOn: $levelOn,
+                         histogramOn: $histogramOn, zebraPercent: $zebraPercent, peakingOn: $peakingOn,
+                         onContinuousFocus: {
+                             tap = nil
+                             m.clearTapFocus()
+                             m.setControls(with(m.controls) { $0.autoFocus = true })
+                         })
+                .transition(.move(edge: .bottom))
+        } else {
+            VStack(spacing: 8) {
+                if let rs = m.replyStatus { ReplyStatusPill(status: rs) }
                 if msgOpen {
                     MessagingPanel { text, alert in m.sendReply(text, alert: alert); msgOpen = false }
-                        .padding(.horizontal, 16).padding(.bottom, 132)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                BottomCluster(
-                    dim: msgOpen,
-                    status: StreamStatusLine(streaming: m.isStreaming, tally: m.tally, paused: m.paused,
-                                             bridgeName: m.bridgeName, throughputBps: m.throughputBps),
-                    presets: m.caps.supportsZoom ? zoomPresets(m.caps.maxZoom) : [],
-                    currentZoom: m.controls.zoom,
-                    onZoom: { m.zoomTo($0) },
-                    onToggleMsg: { withAnimation(.easeOut(duration: 0.2)) { msgOpen.toggle() } })
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            }
+                HStack(alignment: .bottom, spacing: 12) {
+                    Group {
+                        if histogramOn { HistogramOverlay(histogram: m.analysis.histogram) }
+                    }
+                    .frame(width: Self.sideSlot, alignment: .bottomLeading)
 
-            if let tool {
-                ControlPanel(tool: tool, guideMask: $guideMask, level: level, levelOn: $levelOn,
-                             histogramOn: $histogramOn, zebraPercent: $zebraPercent, peakingOn: $peakingOn,
-                             onContinuousFocus: {
-                                 tap = nil
-                                 m.clearTapFocus()
-                                 m.setControls(with(m.controls) { $0.autoFocus = true })
-                             })
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .transition(.move(edge: .bottom))
-            }
+                    BottomCluster(
+                        collapsed: msgOpen,
+                        status: StreamStatusLine(streaming: m.isStreaming, tally: m.tally, paused: m.paused,
+                                                 bridgeName: m.bridgeName, throughputBps: m.throughputBps),
+                        presets: m.caps.supportsZoom ? zoomPresets(m.caps.maxZoom) : [],
+                        currentZoom: m.controls.zoom,
+                        onZoom: { m.zoomTo($0) },
+                        onToggleMsg: { withAnimation(.easeOut(duration: 0.2)) { msgOpen.toggle() } })
+                        .frame(maxWidth: .infinity)
 
-            // Consigne de la régie : par-dessus le HUD, sous le timecode. S'efface seule.
-            if let cue = m.cue {
-                CueBanner(cue: cue) { m.acknowledgeCue() }.padding(.top, 54)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    Group {
+                        if m.isLive {
+                            AudioMeter(level: m.audioLevel, failure: m.audioFailure, micEnabled: m.micEnabled) {
+                                m.setMicEnabled(!m.micEnabled)
+                            }
+                        }
+                    }
+                    .frame(width: Self.sideSlot, alignment: .bottomTrailing)
+                }
             }
         }
     }

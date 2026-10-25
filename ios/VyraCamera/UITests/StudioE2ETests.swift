@@ -105,6 +105,8 @@ final class StudioE2ETests: XCTestCase {
         studio.send(.cue, Data([1]) + Data("Plan large".utf8))
         XCTAssertTrue(app.staticTexts["PLAN LARGE"].waitForExistence(timeout: 5))
         shot("08-consigne")
+        assertApart(app.staticTexts["PLAN LARGE"], app.staticTexts["EN DIRECT · NDI"])
+        assertApart(app.staticTexts["PLAN LARGE"], app.staticTexts["WB"])
 
         // Pilotage : la caméra renvoie l'état réellement appliqué (écho CONTROL).
         var cmd = CameraCommand()
@@ -118,6 +120,11 @@ final class StudioE2ETests: XCTestCase {
         let compris = app.buttons["Compris ✓"]
         XCTAssertTrue(compris.waitForExistence(timeout: 5))
         shot("09-messagerie")
+        for other in [app.staticTexts["AUDIO"], app.staticTexts["LUMINANCE"], app.staticTexts["PLAN LARGE"]] {
+            assertApart(app.buttons["Prêt"], other)
+            assertApart(app.buttons["Compris ✓"], other)
+            assertApart(app.buttons["Envoyer"], other)
+        }
         compris.tap()
         let reply = try studio.next(.reply)
         XCTAssertEqual(reply.payload.first, 0)
@@ -125,12 +132,23 @@ final class StudioE2ETests: XCTestCase {
         studio.send(.seen, Data())
         XCTAssertTrue(app.staticTexts["Vu par la régie ✓✓"].waitForExistence(timeout: 5))
         shot("10-vu-par-la-regie")
+        assertApart(app.staticTexts["Vu par la régie ✓✓"], app.staticTexts["À L'ANTENNE"])
+        assertApart(app.staticTexts["Vu par la régie ✓✓"], app.staticTexts["AUDIO"])
 
         XCTAssertTrue(studio.received(.stats), "télémétrie batterie/thermique jamais reçue")
         XCTAssertFalse(app.staticTexts["00:00:00"].exists, "le timecode du direct n'avance pas")
 
         live.tap()
         XCTAssertTrue(app.staticTexts["MODE CÂBLE USB"].waitForExistence(timeout: 5))
+    }
+
+    // MARK: - Mise en page
+
+    /// Deux éléments affichés ne doivent jamais se recouvrir (ergonomie : aucune pastille dans l'autre).
+    private func assertApart(_ a: XCUIElement, _ b: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        guard a.exists, b.exists else { return }
+        XCTAssertFalse(a.frame.intersects(b.frame),
+                       "chevauchement : « \(a.label) » \(a.frame) / « \(b.label) » \(b.frame)", file: file, line: line)
     }
 
     // MARK: - Pièces jointes

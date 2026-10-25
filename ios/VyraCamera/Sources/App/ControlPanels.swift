@@ -158,8 +158,6 @@ struct ControlPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Vyra.hudLine))
         .contentShape(Rectangle())
         .onTapGesture {}   // absorbe les appuis : ils ne doivent pas déplacer la mise au point
-        // Marge droite calée sur le rail : le volet ne passe jamais dessous.
-        .padding(.leading, 18).padding(.trailing, 88).padding(.vertical, 8)
     }
 }
 

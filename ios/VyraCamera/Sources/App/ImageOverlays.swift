@@ -176,7 +176,6 @@ struct HistogramOverlay: View {
         .frame(width: 156)
         .background(Vyra.hudBg, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Vyra.hudLine))
-        .padding(12)
     }
 }
 

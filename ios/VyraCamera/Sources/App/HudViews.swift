@@ -19,6 +19,7 @@ struct ExposureReadouts: View {
             ReadoutDivider()
             Readout(label: "WB", value: c.wbManual ? "\(c.wbKelvin)K" : awbLabel(c.awbMode), auto: !c.wbManual, accent: c.wbManual)
         }
+        .padding(.horizontal, -10)   // le texte, pas le remplissage, s'aligne sur la marge commune
     }
 }
 
@@ -335,7 +336,8 @@ struct StreamStatusLine: View {
 
 /// Icône Messages au centre, facteurs de zoom en arc (dôme) autour, ligne d'état au-dessus.
 struct BottomCluster<Status: View>: View {
-    let dim: Bool
+    /// Messagerie ouverte : seule l'icône reste ; la ligne d'état et le zoom s'effacent.
+    let collapsed: Bool
     let status: Status
     let presets: [Float]
     let currentZoom: Float
@@ -344,22 +346,22 @@ struct BottomCluster<Status: View>: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            status.opacity(dim ? 0.15 : 1)
-                .frame(maxHeight: .infinity, alignment: .top)
+            if !collapsed {
+                status.frame(maxHeight: .infinity, alignment: .top)
 
-            // Facteurs répartis en arc (~130°) autour du centre de l'icône.
-            let fabR = 25.0, chipR = 17.0, radius = 76.0, span = 130.0
-            ForEach(Array(presets.enumerated()), id: \.offset) { i, z in
-                let theta = presets.count <= 1 ? 0 : -span / 2 + Double(i) * span / Double(presets.count - 1)
-                let rad = theta * .pi / 180
-                ZoomChip(zoom: z, active: abs(currentZoom - z) < z * 0.06) { onZoom(z) }
-                    .offset(x: radius * sin(rad), y: chipR - (fabR + radius * cos(rad)))
-                    .opacity(dim ? 0.12 : 1)
+                // Facteurs répartis en arc (~130°) autour du centre de l'icône.
+                let fabR = 25.0, chipR = 17.0, radius = 76.0, span = 130.0
+                ForEach(Array(presets.enumerated()), id: \.offset) { i, z in
+                    let theta = presets.count <= 1 ? 0 : -span / 2 + Double(i) * span / Double(presets.count - 1)
+                    let rad = theta * .pi / 180
+                    ZoomChip(zoom: z, active: abs(currentZoom - z) < z * 0.06) { onZoom(z) }
+                        .offset(x: radius * sin(rad), y: chipR - (fabR + radius * cos(rad)))
+                }
             }
 
-            MessagesFab(open: dim, action: onToggleMsg)
+            MessagesFab(open: collapsed, action: onToggleMsg)
         }
-        .frame(width: 210, height: 150)
+        .frame(width: 210, height: collapsed ? 50 : 150)
     }
 }
 
@@ -511,6 +513,7 @@ struct CueBanner: View {
         let color = cue.urgent ? Vyra.live : Vyra.accent
         HStack(spacing: 12) {
             Text(cue.text.uppercased()).tracking(0.5).font(.system(size: 17, weight: .heavy)).foregroundColor(.white)
+                .lineLimit(1).minimumScaleFactor(0.6)
                 .shadow(color: .black.opacity(0.7), radius: 2.5)
             Button(action: onAck) {
                 Text("✓ Compris").font(.system(size: 13, weight: .heavy)).foregroundColor(color)
@@ -570,7 +573,7 @@ struct AudioMeter: View {
                 }
             }
             .padding(.horizontal, 9).padding(.vertical, 7)
-            .frame(width: 172)
+            .frame(width: 164)
             .background(Vyra.hudBg, in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(Vyra.hudLine))
         }
