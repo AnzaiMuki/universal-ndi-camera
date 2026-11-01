@@ -23,6 +23,26 @@ final class UndiClient: Uplink {
     private var didConnect = false  // a atteint .ready au moins une fois sur cette connexion
     private var closing = false     // fermeture VOLONTAIRE (stop) : ne pas signaler de perte
 
+    // Fenêtre d'images en vol (comme TcpSink côté Android, technique d'Iriun) : un pont récent accuse
+    // chaque image (trame HEARTBEAT, séquence de l'image). Dès le premier accusé, au-delà de quelques images
+    // non accusées on jette les intermédiaires et on repart sur une image clé — le retard ne s'empile plus.
+    // Derrière une image clé en route (lourde), la marge est plus large : sinon spirale de clés en 4K.
+    // Un ancien pont n'accuse rien : rien ne change. Tout est protégé par `statsLock`.
+    private var acksSeen = false
+    private var inFlight: [(seq: UInt32, sentNs: UInt64)] = []
+    private var awaitingKeyframe = false
+    private var keyframeSeqInFlight: UInt32?
+    private var lastKeyRequestNs: UInt64 = 0
+    private var rttMs: Double = -1
+    private static let windowFrames = 4             // 2 en vol + 2 en attente (Android : MAX_IN_FLIGHT + STALE)
+    private static let windowFramesBehindKey = 8    // ~250 ms à 30 i/s derrière une image clé
+    private static let ackTimeoutNs: UInt64 = 1_000_000_000
+    private static let keyRequestIntervalNs: UInt64 = 500_000_000
+    private static let maxTracked = 64
+
+    /// Images jetées pour congestion : l'appelant demande une image clé à l'encodeur.
+    var onKeyframeNeeded: (() -> Void)?
+
     var onStatus: ((String) -> Void)?
     var onDisconnected: (() -> Void)?   // perte INVOLONTAIRE du lien (déclenche la reconnexion)
     // Canal retour (appelés sur la file du client ; l'appelant repasse sur le thread principal).
@@ -107,7 +127,11 @@ final class UndiClient: Uplink {
             case .ready:
                 self.connected = true
                 self.didConnect = true
-                self.statsLock.lock(); self.pendingFrames = 0; self.statsLock.unlock()
+                self.statsLock.lock()
+                self.pendingFrames = 0
+                // Le pont d'en face peut être ancien (sans accusés) : la fenêtre se ré-arme au 1er accusé.
+                self.acksSeen = false; self.inFlight.removeAll(); self.awaitingKeyframe = false; self.keyframeSeqInFlight = nil
+                self.statsLock.unlock()
                 self.onStatus?("Connecté à \(label)")
                 self.rxBuffer.removeAll(keepingCapacity: true)
                 self.startReceive()
@@ -153,6 +177,11 @@ final class UndiClient: Uplink {
         }
         pendingFrames += 1
         let header = UndiProtocol.header(type: type, flags: flags, length: payload.count, ptsUs: ptsUs, sequence: sequence)
+        if type == .video {
+            inFlight.append((sequence, DispatchTime.now().uptimeNanoseconds))
+            if inFlight.count > Self.maxTracked { inFlight.removeFirst() }   // ancien pont : jamais d'accusé
+            if flags & UndiProtocol.flagKeyframe != 0 { keyframeSeqInFlight = sequence }
+        }
         sequence &+= 1
         statsLock.unlock()
         var frame = header
@@ -180,7 +209,46 @@ final class UndiClient: Uplink {
         var flags: UInt16 = 0
         if keyframe { flags |= UndiProtocol.flagKeyframe }
         if config { flags |= UndiProtocol.flagConfig }
-        writeFrame(type: .video, flags: flags, ptsUs: ptsUs, payload: annexB, droppable: !keyframe && !config)
+        let droppable = !keyframe && !config
+        if droppable && !windowAdmits() { return }
+        if keyframe { statsLock.lock(); awaitingKeyframe = false; statsLock.unlock() }
+        writeFrame(type: .video, flags: flags, ptsUs: ptsUs, payload: annexB, droppable: droppable)
+    }
+
+    /// Fenêtre d'envoi : false = image intermédiaire jetée (comptée), saut vers la prochaine image clé.
+    private func windowAdmits() -> Bool {
+        statsLock.lock()
+        guard acksSeen else { statsLock.unlock(); return true }
+        let now = DispatchTime.now().uptimeNanoseconds
+        // Accusé attendu depuis trop longtemps : tenu pour perdu, la fenêtre se rouvre (jamais de gel).
+        if let first = inFlight.first, now - first.sentNs > Self.ackTimeoutNs {
+            inFlight.removeAll(); keyframeSeqInFlight = nil
+        }
+        let limit = keyframeSeqInFlight != nil ? Self.windowFramesBehindKey : Self.windowFrames
+        guard awaitingKeyframe || inFlight.count >= limit else { statsLock.unlock(); return true }
+        dropped += 1
+        awaitingKeyframe = true
+        let request = now - lastKeyRequestNs >= Self.keyRequestIntervalNs
+        if request { lastKeyRequestNs = now }
+        statsLock.unlock()
+        if request { onKeyframeNeeded?() }
+        return false
+    }
+
+    /// Accusé du pont pour l'image [acked] : libère la fenêtre et mesure le RTT (lissé).
+    private func onAck(_ acked: UInt32) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        statsLock.lock()
+        acksSeen = true
+        while let first = inFlight.first, Int32(bitPattern: acked &- first.seq) >= 0 {
+            inFlight.removeFirst()
+            if first.seq == acked {
+                let sample = Double(now - first.sentNs) / 1e6
+                rttMs = rttMs < 0 ? sample : rttMs + 0.1 * (sample - rttMs)
+            }
+        }
+        if let k = keyframeSeqInFlight, Int32(bitPattern: acked &- k) >= 0 { keyframeSeqInFlight = nil }
+        statsLock.unlock()
     }
 
     /// Envoie un bloc audio PCM. Charge utile : sampleRate(u32 LE) | channels(u16 LE) | PCM int16 LE
@@ -200,7 +268,11 @@ final class UndiClient: Uplink {
     func sendReply(_ reply: Reply) { writeFrame(type: .reply, flags: 0, ptsUs: 0, payload: reply.encodePayload()) }
 
     /// Télémétrie batterie/thermique → pont (trame STATS).
-    func sendStats(_ stats: DeviceStats) { writeFrame(type: .stats, flags: 0, ptsUs: 0, payload: stats.encodePayload()) }
+    func sendStats(_ stats: DeviceStats) {
+        var s = stats
+        statsLock.lock(); s.rttMs = acksSeen && rttMs >= 0 ? Int(rttMs.rounded()) : -1; statsLock.unlock()
+        writeFrame(type: .stats, flags: 0, ptsUs: 0, payload: s.encodePayload())
+    }
 
     /// Écho de l'état RÉELLEMENT appliqué → pont (trame CONTROL) : il affiche la vérité, pas sa demande.
     func sendControl(_ cmd: CameraCommand) { writeFrame(type: .control, flags: 0, ptsUs: 0, payload: cmd.encodePayload()) }
@@ -235,6 +307,7 @@ final class UndiClient: Uplink {
             let total = 24 + length
             if rxBuffer.count < total { return }   // trame incomplète : on attend la suite
             let payload = length > 0 ? rxBuffer.subdata(in: 24..<total) : Data()
+            if type == FrameType.heartbeat.rawValue { onAck(u32(20)) }   // accusé d'image (séquence à l'offset 20)
             dispatch(type: type, payload: payload)
             rxBuffer = rxBuffer.subdata(in: total..<rxBuffer.count)
         }

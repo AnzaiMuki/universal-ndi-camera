@@ -58,7 +58,9 @@ struct VideoFormat: Equatable, Identifiable {
     static let p720 = VideoFormat(label: "720p", width: 1280, height: 720, bitrateBps: 3_500_000)
     static let p1080 = VideoFormat(label: "1080p", width: 1920, height: 1080, bitrateBps: 6_000_000)
     static let p1440 = VideoFormat(label: "1440p", width: 2560, height: 1440, bitrateBps: 10_000_000)
-    static let candidates = [p360, p720, p1080, p1440]
+    // 4K : 25 Mb/s (comme Android). Proposé seulement si la caméra de l'appareil la fournit.
+    static let p2160 = VideoFormat(label: "2160p", width: 3840, height: 2160, bitrateBps: 25_000_000)
+    static let candidates = [p360, p720, p1080, p1440, p2160]
 }
 
 // MARK: - Analyse d'exposition

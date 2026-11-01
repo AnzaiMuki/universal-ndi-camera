@@ -56,7 +56,8 @@ final class UndiProtocolTests: XCTestCase {
 
     func testDeviceStatsPayload() {
         let p = DeviceStats(batteryPercent: 55, charging: true, thermal: .warm).encodePayload()
-        XCTAssertEqual(Array(p), [55, 1, 2])
+        XCTAssertEqual(Array(p), [55, 1, 2, 0xFF, 0xFF])   // RTT inconnu
+        XCTAssertEqual(Array(DeviceStats(batteryPercent: 55, charging: true, thermal: .warm, rttMs: 300).encodePayload()), [55, 1, 2, 0x2C, 0x01])
         // Batterie inconnue → 0xFF
         XCTAssertEqual(DeviceStats(batteryPercent: -1).encodePayload()[0], 0xFF)
     }

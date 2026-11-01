@@ -81,6 +81,11 @@ final class StreamManager: ObservableObject {
 
     private var previewStarted = false
     private var lastConnect: ((@escaping (Bool) -> Void) -> Void)?
+    /// Le pont découvert annonce le H.265 (TXT Bonjour « hevc=1 ») ; faux en IP manuelle et en USB.
+    private var allowHevc = false
+    /// Codec du direct en cours : H.265 à partir de 1440p si le pont et l'encodeur le permettent.
+    private var codec: StreamConfig.Codec = .h264
+    private static let hevcMinHeight = 1440
     private var statsTimer: Timer?
     private var adaptTimer: Timer?
     private var lastDropped = 0
@@ -115,6 +120,8 @@ final class StreamManager: ObservableObject {
         client.onSeen = { [weak self] in Task { @MainActor in self?.markReplySeen() } }
         client.onCommand = { [weak self] cmd in Task { @MainActor in self?.apply(cmd) } }
         client.onDisconnected = { [weak self] in Task { @MainActor in self?.handleDisconnect() } }
+        // Fenêtre d'envoi saturée (images jetées) : image clé immédiate pour repartir proprement.
+        (client as? UndiClient)?.onKeyframeNeeded = { [weak self] in Task { @MainActor in self?.encoder?.requestKeyframe() } }
     }
 
     private func selectTransport(srt: Bool) {
@@ -172,6 +179,7 @@ final class StreamManager: ObservableObject {
     }
 
     func startManual(host: String, port: UInt16) {
+        allowHevc = false
         selectTransport(srt: transport == .srt)
         beginConnect(label: host) { completion in self.client.connect(host: host, port: port, completion: completion) }
     }
@@ -179,12 +187,14 @@ final class StreamManager: ObservableObject {
     func startDiscovered(_ found: Discovery.Found) {
         // La découverte Bonjour vise le TCP du pont ; SRT passe par l'adresse saisie.
         selectTransport(srt: false)
+        allowHevc = found.hevc
         guard let tcp = client as? UndiClient else { return }
         beginConnect(label: found.name) { completion in tcp.connect(endpoint: found.endpoint, label: found.name, completion: completion) }
     }
 
     /// Câble USB : l'iPhone attend que VYRA Studio le rejoigne par le câble (voir UndiClient.accept).
     func startUsb() {
+        allowHevc = false
         selectTransport(srt: false)   // SRT/UDP ne traverse pas le tunnel USB
         guard let tcp = client as? UndiClient else { return }
         beginConnect(label: "USB (câble)", failure: "VYRA Studio introuvable par câble") { completion in
@@ -217,9 +227,11 @@ final class StreamManager: ObservableObject {
         flags.paused = false
         paused = false
         client.sendHello(name: deviceName)
-        client.sendStreamConfig(StreamConfig(codec: .h264, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
+        codec = allowHevc && format.height >= Self.hevcMinHeight &&
+            H264Encoder.supportsHEVC(width: format.width, height: format.height) ? .hevc : .h264
+        client.sendStreamConfig(StreamConfig(codec: codec, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
 
-        let enc = H264Encoder(width: format.width, height: format.height, fps: fps)
+        let enc = H264Encoder(width: format.width, height: format.height, fps: fps, hevc: codec == .hevc)
         enc.onConfig = { cfg in client.sendVideo(cfg, ptsUs: 0, keyframe: false, config: true) }
         enc.onFrame = { data, pts, key in client.sendVideo(data, ptsUs: pts, keyframe: key, config: false) }
         currentBitrate = format.bitrateBps
@@ -535,7 +547,7 @@ final class StreamManager: ObservableObject {
         reconnecting = false
         status = "En direct"
         client.sendHello(name: deviceName)
-        client.sendStreamConfig(StreamConfig(codec: .h264, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
+        client.sendStreamConfig(StreamConfig(codec: codec, width: format.width, height: format.height, fps: fps, bitrateBps: currentBitrate))
         encoder?.resendConfig()
         encoder?.requestKeyframe()
         if micEnabled && !audioMuted { startAudio() }

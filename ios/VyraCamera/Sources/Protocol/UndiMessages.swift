@@ -46,7 +46,8 @@ struct Reply {
     }
 }
 
-// Télémétrie périodique (téléphone → pont, trame STATS) : batterie u8 (0..100 ou 0xFF) | charge u8 | thermique u8.
+// Télémétrie périodique (téléphone → pont, trame STATS) : batterie u8 (0..100 ou 0xFF) | charge u8 | thermique u8
+// | RTT u16 LE en ms (0xFFFF = inconnu). Un ancien pont lit les 3 premiers octets et ignore le reste.
 enum ThermalLevel: Int {
     case unknown = 0, nominal = 1, warm = 2, hot = 3, critical = 4
 }
@@ -55,11 +56,14 @@ struct DeviceStats {
     var batteryPercent: Int = -1   // -1 = inconnu
     var charging = false
     var thermal: ThermalLevel = .unknown
+    var rttMs: Int = -1            // aller-retour image → accusé du pont, -1 = inconnu
     static let unknownBattery = 0xFF
+    static let unknownRtt = 0xFFFF
 
     func encodePayload() -> Data {
         let battery = (batteryPercent >= 0 && batteryPercent <= 100) ? batteryPercent : DeviceStats.unknownBattery
-        return Data([UInt8(battery), charging ? 1 : 0, UInt8(thermal.rawValue)])
+        let rtt = (rttMs >= 0 && rttMs < DeviceStats.unknownRtt) ? rttMs : DeviceStats.unknownRtt
+        return Data([UInt8(battery), charging ? 1 : 0, UInt8(thermal.rawValue), UInt8(rtt & 0xFF), UInt8(rtt >> 8)])
     }
 }
 
