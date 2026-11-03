@@ -1,0 +1,238 @@
+name: Build iOS (VYRA Camera)
+
+# Compile l'app iPhone sur un Mac dans le cloud (gratuit pour un dépôt public). Produit un .ipa
+# NON SIGNÉ : à installer sur l'iPhone avec Sideloadly / AltStore + un identifiant Apple GRATUIT
+# (ces outils re-signent eux-mêmes). Aucun compte Apple Developer payant nécessaire pour tester.
+
+on:
+  push:
+    paths: ["ios/VyraCamera/**"]
+  pull_request:
+    paths: ["ios/VyraCamera/**"]
+  workflow_dispatch:   # bouton « Run workflow » dans l'onglet Actions
+
+jobs:
+  # SRT natif : compile libsrt pour iOS (sans chiffrement → sans OpenSSL) puis COMPILE L'APP avec
+  # le chemin SRT activé et lié à libsrt. Vérifie compile+link du transport SRT (SrtClient + CSrt).
+  srt-build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios/VyraCamera
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sélectionner Xcode 16
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Installer CMake + XcodeGen
+        run: brew install cmake xcodegen
+      - name: Compiler libsrt (iphonesimulator arm64, sans chiffrement)
+        run: |
+          git clone --depth 1 https://github.com/Haivision/srt.git "$RUNNER_TEMP/srt"
+          cd "$RUNNER_TEMP/srt"
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/srtinstall" \
+            -DENABLE_ENCRYPTION=OFF -DENABLE_APPS=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DENABLE_STDCXX_SYNC=ON
+          cmake --build build --config Release -j3
+          cmake --install build
+          test -f "$RUNNER_TEMP/srtinstall/lib/libsrt.a" && test -f "$RUNNER_TEMP/srtinstall/include/srt/srt.h"
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+      - name: Choisir un simulateur disponible
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['udid'] for r in d['devices'].values() for x in r if x.get('isAvailable') and 'iPhone' in x['name']), ''))")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Compiler l'app avec SRT activé (compile + link)
+        run: |
+          SRT="$RUNNER_TEMP/srtinstall"
+          xcodebuild build \
+            -project VyraCamera.xcodeproj \
+            -scheme VyraCamera \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath "$RUNNER_TEMP/DDsrt" \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="SRT_ENABLED" \
+            HEADER_SEARCH_PATHS="$SRT/include" \
+            LIBRARY_SEARCH_PATHS="$SRT/lib" \
+            OTHER_LDFLAGS="-lsrt -lc++" \
+            OTHER_SWIFT_FLAGS="-Xcc -fmodule-map-file=$PWD/CSrt/module.modulemap -Xcc -I$SRT/include"
+
+  # Tests de A à Z sur SIMULATEUR iOS (dans le cloud macOS, gratuit) : formats filaires UNDI
+  # vérifiés octet par octet, puis l'app est installée et LANCÉE dans le simulateur (smoke test).
+  # NB : le simulateur n'a pas de caméra → la captation réelle se teste sur iPhone physique.
+  # Deux écrans : un iPhone standard et un petit écran (iPhone SE, 4,7") où les chevauchements et
+  # débordements apparaissent en premier.
+  test:
+    name: test (${{ matrix.ecran }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        ecran: [standard, petit]
+    defaults:
+      run:
+        working-directory: ios/VyraCamera
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sélectionner Xcode 16
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+      - name: Choisir un simulateur (${{ matrix.ecran }})
+        id: sim
+        run: |
+          if [ "${{ matrix.ecran }}" = "petit" ]; then
+            UDID=$(xcrun simctl list devices available -j | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['udid'] for r in d['devices'].values() for x in r if x.get('isAvailable') and 'iPhone SE' in x['name']), ''))")
+            if [ -z "$UDID" ]; then
+              # Aucun iPhone SE préinstallé : on le crée sur le runtime iOS le plus récent.
+              TYPE=$(xcrun simctl list devicetypes -j | python3 -c "import sys,json;print(next((t['identifier'] for t in reversed(json.load(sys.stdin)['devicetypes']) if 'iPhone SE' in t['name']), ''))")
+              RT=$(xcrun simctl list runtimes available -j | python3 -c "import sys,json;print([r['identifier'] for r in json.load(sys.stdin)['runtimes'] if r.get('platform')=='iOS'][-1])")
+              UDID=$(xcrun simctl create "iPhone SE (CI)" "$TYPE" "$RT")
+            fi
+          else
+            UDID=$(xcrun simctl list devices available -j | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['udid'] for r in d['devices'].values() for x in r if x.get('isAvailable') and 'iPhone' in x['name'] and 'SE' not in x['name']), ''))")
+          fi
+          test -n "$UDID" || { echo "Aucun simulateur trouvé"; exit 1; }
+          xcrun simctl list devices | grep "$UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      # Tests unitaires (protocole UNDI, sortie HDMI) + bout en bout : le test UI joue VYRA Studio,
+      # passe l'app en « USB (câble) » et la rejoint sur 127.0.0.1:6789 (le simulateur partage le
+      # réseau du Mac). La caméra est une mire de synthèse (le simulateur n'en a pas).
+      - name: Tests unitaires + bout en bout (Studio simulé, mode câble USB)
+        env:
+          TEST_RUNNER_E2E_OUT: ${{ runner.temp }}/e2e   # transmis au test sous le nom E2E_OUT
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          xcodebuild test             -project VyraCamera.xcodeproj             -scheme VyraCamera             -destination "id=${{ steps.sim.outputs.udid }}"             -derivedDataPath "$RUNNER_TEMP/DD"             -resultBundlePath "$RUNNER_TEMP/Resultats.xcresult"             CODE_SIGNING_ALLOWED=NO
+      - name: Décoder le flux reçu par le Studio simulé (preuve que le H.264 est lisible)
+        if: always()
+        run: |
+          F="$RUNNER_TEMP/e2e/flux.h264"
+          test -s "$F" || { echo "Aucun flux reçu"; exit 1; }
+          brew install ffmpeg >/dev/null
+          ffprobe -v error -count_frames -select_streams v:0             -show_entries stream=codec_name,width,height,nb_read_frames -of default=nw=1 "$F"             | tee "$RUNNER_TEMP/e2e/ffprobe.txt"
+          N=$(grep nb_read_frames "$RUNNER_TEMP/e2e/ffprobe.txt" | cut -d= -f2)
+          test "${N:-0}" -ge 20 || { echo "Trop peu d'images décodées : $N"; exit 1; }
+          ffmpeg -v error -i "$F" -vf "select=eq(n\,15)" -frames:v 1 "$RUNNER_TEMP/e2e/image-recue.png"
+      - name: Publier captures, flux et rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-test-bout-en-bout-${{ matrix.ecran }}
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: warn
+      - name: Publier le rapport Xcode complet
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-rapport-xcresult-${{ matrix.ecran }}
+          path: ${{ runner.temp }}/Resultats.xcresult
+          if-no-files-found: warn
+      - name: Smoke test (installe + lance l'app dans le simulateur)
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          APP=$(find "$RUNNER_TEMP/DD" -name 'VyraCamera.app' -path '*-iphonesimulator*' | head -1)
+          echo "App : $APP"
+          xcrun simctl install "${{ steps.sim.outputs.udid }}" "$APP"
+          xcrun simctl launch "${{ steps.sim.outputs.udid }}" com.ndicam.vyracamera
+
+  build:
+    runs-on: macos-14
+    needs: test
+    permissions:
+      contents: write   # publication de la préversion ios-beta (installation gratuite via AltStore)
+    defaults:
+      run:
+        working-directory: ios/VyraCamera
+    steps:
+      - uses: actions/checkout@v4
+
+      # XcodeGen génère un projet au format Xcode 16 (objectVersion 77) : il faut sélectionner
+      # un Xcode 16 sur le runner, sinon le Xcode par défaut (15.x) refuse de l'ouvrir.
+      - name: Sélectionner Xcode 16
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Installer CMake + XcodeGen
+        run: brew install cmake xcodegen
+
+      - name: Compiler libsrt (iphoneos arm64, sans chiffrement)
+        run: |
+          git clone --depth 1 https://github.com/Haivision/srt.git "$RUNNER_TEMP/srt"
+          cd "$RUNNER_TEMP/srt"
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/srtinstall" \
+            -DENABLE_ENCRYPTION=OFF -DENABLE_APPS=OFF \
+            -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DENABLE_STDCXX_SYNC=ON
+          cmake --build build --config Release -j3
+          cmake --install build
+
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+
+      - name: Compiler (archive non signée, SRT activé)
+        run: |
+          SRT="$RUNNER_TEMP/srtinstall"
+          xcodebuild \
+            -project VyraCamera.xcodeproj \
+            -scheme VyraCamera \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/VyraCamera.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="SRT_ENABLED" \
+            HEADER_SEARCH_PATHS="$SRT/include" \
+            LIBRARY_SEARCH_PATHS="$SRT/lib" \
+            OTHER_LDFLAGS="-lsrt -lc++" \
+            OTHER_SWIFT_FLAGS="-Xcc -fmodule-map-file=$PWD/CSrt/module.modulemap -Xcc -I$SRT/include"
+
+      - name: Empaqueter en .ipa non signé
+        run: |
+          APP="$RUNNER_TEMP/VyraCamera.xcarchive/Products/Applications/VyraCamera.app"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -r -y VyraCamera-unsigned.ipa Payload >/dev/null)
+
+      - name: Publier l'artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VyraCamera-unsigned-ipa
+          path: ${{ runner.temp }}/VyraCamera-unsigned.ipa
+          if-no-files-found: error
+
+      # Installation gratuite sur iPhone : AltStore (identifiant Apple gratuit) lit la source
+      # altstore.json et installe / renouvelle l'app. Préversion jamais « Latest » (v1.x = Android/Studio).
+      - name: Publier la préversion ios-beta (.ipa + source AltStore)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPOT: ${{ github.repository }}
+        run: |
+          cp "$RUNNER_TEMP/VyraCamera-unsigned.ipa" "$RUNNER_TEMP/VyraCamera.ipa"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/altstore_source.py" \
+            "$RUNNER_TEMP/Payload/VyraCamera.app/Info.plist" "$RUNNER_TEMP/VyraCamera.ipa" \
+            "$DEPOT" > "$RUNNER_TEMP/altstore.json"
+          cat "$RUNNER_TEMP/altstore.json"
+          gh release view ios-beta -R "$DEPOT" >/dev/null 2>&1 || \
+            gh release create ios-beta -R "$DEPOT" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "VYRA Camera iPhone (bêta)" \
+              --notes "Installation gratuite : voir ios/VyraCamera/INSTALLER-SUR-IPHONE.md. Source AltStore : https://github.com/$DEPOT/releases/download/ios-beta/altstore.json"
+          gh release upload ios-beta -R "$DEPOT" --clobber "$RUNNER_TEMP/VyraCamera.ipa" "$RUNNER_TEMP/altstore.json"
